@@ -28,3 +28,6 @@ google-services.json
 
 # Android Profiling
 *.hprof
+
+# data file
+JUV015-220409-gonogo_modified.mat
