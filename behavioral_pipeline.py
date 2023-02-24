@@ -70,7 +70,7 @@ class GoNogoBehaviorMat(BehaviorMat):
     for i in range(1, 17):
         code_map[(700 + i) / 100] = ('sound_on', str(i))
 
-    fields = ['onset', 'first_lick_in', 'last_lick_out', 'water_valve_on', 'outcome']
+    fields = ['onset', 'first_lick_in', 'last_lick_out', 'water_valve_on', 'outcome', 'licks']
 
     time_unit = 's'
 
@@ -109,6 +109,8 @@ class GoNogoBehaviorMat(BehaviorMat):
 
         return eventlist
 
+
+
     def to_df(self):
         columns = ['trial'] + self.fields
         result_df = pd.DataFrame(np.full((self.trialN, len(columns)), np.nan), columns=columns)
@@ -124,39 +126,48 @@ class GoNogoBehaviorMat(BehaviorMat):
         result_df['quality'] = pd.Categorical(["normal"] * self.trialN, ['missed', 'abort', 'normal'], ordered=False)
         result_df['water_valve_amt'] = pd.Categorical([""] * self.trialN, [1, 2, 3], ordered=False)
 
+        # add another entry to record all the licks
+        result_df['licks'] = [[] for _ in range(self.trialN)] # convert to np.array later
+
         for node in self.eventlist:
             # New tone signifies a new trial
             if node.event == 'sound_on':
-                result_df.loc[node.trial_index(), 'onset'] = node.etime
-                result_df.loc[node.trial_index(), 'sound_num'] = int(self.code_map[node.ecode][1])
+                result_df.loc[node.trial_index()-1, 'onset'] = node.etime
+                result_df.loc[node.trial_index()-1, 'sound_num'] = int(self.code_map[node.ecode][1])
 
             elif node.event == 'in':
-                if np.isnan(result_df.loc[node.trial_index(), 'first_lick_in']):
-                    result_df.loc[node.trial_index(), 'first_lick_in'] = node.etime
+                # add a list contain all licks in the trial
+                if not result_df.loc[node.trial_index()-1,'licks']:
+                    result_df.loc[node.trial_index()-1,'licks'] = [node.etime]
+                else:
+                    result_df.loc[node.trial_index()-1,'licks'].append(node.etime)
+
+                if np.isnan(result_df.loc[node.trial_index()-1, 'first_lick_in']):
+                    result_df.loc[node.trial_index()-1, 'first_lick_in'] = node.etime
             elif node.event == 'out':
-                result_df.loc[node.trial_index(), 'last_lick_out'] = node.etime
-                result_df.loc[node.trial_index(), 'licks_out'] += 1
+                result_df.loc[node.trial_index()-1, 'last_lick_out'] = node.etime
+                result_df.loc[node.trial_index()-1, 'licks_out'] += 1
             elif node.event == 'outcome':
-                result_df.loc[node.trial_index(), 'outcome'] = node.etime
+                result_df.loc[node.trial_index()-1, 'outcome'] = node.etime
                 outcome = self.code_map[node.ecode][1]
                 # quality
                 if outcome in ['missed', 'abort']:
-                    result_df.loc[node.trial_index(), 'quality'] = outcome
+                    result_df.loc[node.trial_index()-1, 'quality'] = outcome
                 # reward
                 if '_correct_' in outcome:
                     reward = int(outcome[-1]) if outcome[-1].isnumeric() else 0
-                    result_df.loc[node.trial_index(), 'reward'] = reward
+                    result_df.loc[node.trial_index()-1, 'reward'] = reward
                 else:
-                    result_df.loc[node.trial_index(), 'reward'] = -1
+                    result_df.loc[node.trial_index()-1, 'reward'] = -1
                 # go nogo
                 if outcome.startswith('go') or outcome == 'missed':
-                    result_df.loc[node.trial_index(), 'go_nogo'] = 'go'
+                    result_df.loc[node.trial_index()-1, 'go_nogo'] = 'go'
                 elif outcome.startswith('no-go'):
-                    result_df.loc[node.trial_index(), 'go_nogo'] = 'nogo'
+                    result_df.loc[node.trial_index()-1, 'go_nogo'] = 'nogo'
             elif node.event == 'water_valve':
                 num_reward = self.code_map[node.ecode][1]
-                result_df.loc[node.trial_index(), 'water_valve_amt'] = int(num_reward)
-                result_df.loc[node.trial_index(), 'water_valve_on'] = node.etime
+                result_df.loc[node.trial_index()-1, 'water_valve_amt'] = int(num_reward)
+                result_df.loc[node.trial_index()-1, 'water_valve_on'] = node.etime
 
         return result_df
 
@@ -175,9 +186,10 @@ class GoNogoBehaviorMat(BehaviorMat):
 if __name__ == "__main__":
     animal = 'JUV011'
     session = '211215'
-    input_folder = fr"\\filenest.diskstation.me\Wilbrecht_file_server\Madeline\processed_data\{animal}\{session}"
-    input_file = fr"{animal}_{session}_behaviorLOG.mat"
+    input_folder = "C:\\Users\\hongl\\Documents\\GitHub\\madeline_go_nogo\\data"
+    input_file = "JUV015_220409_behaviorLOG.mat"
     x = GoNogoBehaviorMat(animal, session, os.path.join(input_folder, input_file))
     output_file = f"{animal}_{session}_behavior_output"
     x.output_df(os.path.join(input_folder, output_file))
+
 

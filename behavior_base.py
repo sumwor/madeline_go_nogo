@@ -50,7 +50,7 @@ class EventNode:
         if self.is_sentinel:
             return None
         else:
-            return int(np.ceil(self.trial)) - 1
+            return int(np.ceil(self.trial+0.5-1))  # changed a bug
 
     # Methods Reserved For Sentinel Node
     def __len__(self):
