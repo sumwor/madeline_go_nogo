@@ -5,6 +5,10 @@ import pandas as pd
 import h5py
 import os
 
+import matplotlib.pyplot as plt
+from scipy.optimize import minimize
+import pandas as pd
+
 from behavior_base import PSENode, EventNode
 
 # From matlab file get_Headfix_GoNo_EventTimes.m:
@@ -70,7 +74,7 @@ class GoNogoBehaviorMat(BehaviorMat):
     for i in range(1, 17):
         code_map[(700 + i) / 100] = ('sound_on', str(i))
 
-    fields = ['onset', 'first_lick_in', 'last_lick_out', 'water_valve_on', 'outcome', 'licks']
+    fields = ['onset', 'first_lick_in', 'last_lick_out', 'water_valve_on', 'outcome', 'licks','running_speed','time_0']
 
     time_unit = 's'
 
@@ -80,12 +84,14 @@ class GoNogoBehaviorMat(BehaviorMat):
         self.animal = animal
         self.session = session
         self.trialN = len(self.hfile['out/result'])
-        self.eventlist = self.initialize_node()
+        self.eventlist, self.runningSpeed = self.initialize_node()
 
     def initialize_node(self):
         code_map = self.code_map
         eventlist = EventNode(None, None, None, None)
         trial_events = np.array(self.hfile['out/GoNG_EventTimes'])
+        running_speed = np.array(self.hfile['out/run_speed'])
+
         exp_complexity = None
         struct_complexity = None
         prev_node = None
@@ -107,15 +113,14 @@ class GoNogoBehaviorMat(BehaviorMat):
             eventlist.append(cnode)
             prev_node = cnode
 
-        return eventlist
-
-
+        return eventlist, running_speed
 
     def to_df(self):
         columns = ['trial'] + self.fields
         result_df = pd.DataFrame(np.full((self.trialN, len(columns)), np.nan), columns=columns)
         result_df['animal'] = self.animal
         result_df['session'] = self.session
+        result_df['time_0'] = 0 # update later
         result_df = result_df[['animal', 'session', 'trial'] + self.fields]
 
         result_df['trial'] = np.arange(1, self.trialN + 1)
@@ -126,29 +131,37 @@ class GoNogoBehaviorMat(BehaviorMat):
         result_df['quality'] = pd.Categorical(["normal"] * self.trialN, ['missed', 'abort', 'normal'], ordered=False)
         result_df['water_valve_amt'] = pd.Categorical([""] * self.trialN, [1, 2, 3], ordered=False)
 
+
         # add another entry to record all the licks
         result_df['licks'] = [[] for _ in range(self.trialN)] # convert to np.array later
+        result_df['choice'] = pd.Categorical([""] * self.trialN, [-4, -3, -2, -1, 0, 1, 2], ordered=False)
 
         for node in self.eventlist:
             # New tone signifies a new trial
             if node.event == 'sound_on':
-                result_df.loc[node.trial_index()-1, 'onset'] = node.etime
-                result_df.loc[node.trial_index()-1, 'sound_num'] = int(self.code_map[node.ecode][1])
+                # get the time of cue onset in trial 1, normalize all following trials
+                if node.trial_index() == 1:
+                    time_0 = node.etime
+                    result_df['time_0'] = time_0
+
+                result_df.at[node.trial_index()-1, 'onset'] = node.etime-time_0
+                result_df.at[node.trial_index()-1, 'sound_num'] = int(self.code_map[node.ecode][1])
+
 
             elif node.event == 'in':
                 # add a list contain all licks in the trial
-                if not result_df.loc[node.trial_index()-1,'licks']:
-                    result_df.loc[node.trial_index()-1,'licks'] = [node.etime]
+                if not result_df.loc[node.trial_index()-1, 'licks']:
+                    result_df.at[node.trial_index()-1, 'licks'] = [node.etime-time_0]
                 else:
-                    result_df.loc[node.trial_index()-1,'licks'].append(node.etime)
+                    result_df.at[node.trial_index()-1, 'licks'].append(node.etime-time_0)
 
                 if np.isnan(result_df.loc[node.trial_index()-1, 'first_lick_in']):
-                    result_df.loc[node.trial_index()-1, 'first_lick_in'] = node.etime
+                    result_df.loc[node.trial_index()-1, 'first_lick_in'] = node.etime-time_0
             elif node.event == 'out':
-                result_df.loc[node.trial_index()-1, 'last_lick_out'] = node.etime
+                result_df.loc[node.trial_index()-1, 'last_lick_out'] = node.etime-time_0
                 result_df.loc[node.trial_index()-1, 'licks_out'] += 1
             elif node.event == 'outcome':
-                result_df.loc[node.trial_index()-1, 'outcome'] = node.etime
+                result_df.loc[node.trial_index()-1, 'outcome'] = node.etime-time_0
                 outcome = self.code_map[node.ecode][1]
                 # quality
                 if outcome in ['missed', 'abort']:
@@ -167,7 +180,33 @@ class GoNogoBehaviorMat(BehaviorMat):
             elif node.event == 'water_valve':
                 num_reward = self.code_map[node.ecode][1]
                 result_df.loc[node.trial_index()-1, 'water_valve_amt'] = int(num_reward)
-                result_df.loc[node.trial_index()-1, 'water_valve_on'] = node.etime
+                result_df.loc[node.trial_index()-1, 'water_valve_on'] = node.etime-time_0
+
+        # align running speed to trials
+        self.runningSpeed[:, 0] = self.runningSpeed[:, 0] - time_0
+        result_df['running_speed'] = [[] for _ in range(self.trialN)]  # convert to np.array later
+
+        # remap reward to self.outcome
+        # -4: probeSti, no lick; -3: probSti, lick; -2: miss; -1: false alarm; 0: correct reject; 1/2: hit for reward amount 1/2
+
+        for tt in range(self.trialN):
+            t_start = result_df.onset[tt]
+            if tt<self.trialN-1:
+                t_end = result_df.onset[tt+1]
+                result_df.at[tt, 'running_speed'] = [self.runningSpeed[np.logical_and(self.runningSpeed[:,0]>=t_start-3, self.runningSpeed[:,0]<t_end),:]]
+            elif tt == self.trialN-1:
+                result_df.at[tt - 1, 'running_speed'] = [self.runningSpeed[self.runningSpeed[:, 0] >= t_start-3, :]]
+
+            # remap reward to outcome
+            if result_df.sound_num[tt] in [9, 10, 11, 12, 13, 14, 15, 16]:
+                result_df.at[tt, 'choice'] = -4 if result_df.at[tt, 'licks_out']==0 else -3
+            elif result_df.sound_num[tt] in [1, 2, 3, 4]:
+                result_df.at[tt, 'choice'] = -2 if result_df.at[tt, 'licks_out']==0 else result_df.at[tt, 'reward']
+            elif result_df.sound_num[tt] in [5, 6, 7, 8]:
+                result_df.at[tt, 'choice'] = 0 if result_df.at[tt, 'licks_out']==0 else -1
+
+        # save the data into self
+        self.DF = result_df
 
         return result_df
 
@@ -182,14 +221,378 @@ class GoNogoBehaviorMat(BehaviorMat):
         # TODO: Implement
         pass
 
+    ### plot methods for behavior data
+    # should add outputs later, for summary plots
+
+    def beh_session(self):
+        # plot the outcome according to trials
+        fig, ax = plt.subplots()
+        ax.scatter(np.arange(self.trialN), self.DF.reward)
+        plt.show()
+
+    def psycho_curve(self):
+        # get variables
+        # hfile['out']['sound_freq'][0:-1]
+
+        numSound = 16
+
+        goCueInd = np.arange(1, 5)
+        nogoCueInd = np.arange(5, 9)
+        probeCueInd = np.arange(9, 17)
+
+        goFreq = np.array([6.49, 7.07, 8.46, 9.17])
+        nogoFreq = np.array([10.9, 11.9, 14.14, 15.41])
+        probeFreq = np.array([6.77, 7.73, 8.81, 9.71, 10.29, 11.38, 12.97, 14.76])
+        midFreq = (9.17+10.09)/2
+
+        # %%
+        # psychometric curve
+        sound = np.arange(1, numSound + 1)
+        numGo = np.zeros(numSound)
+
+        # sort sound, base on the frequency
+        soundIndTotal = np.concatenate((goCueInd, nogoCueInd, probeCueInd))
+        soundFreqTotal = np.concatenate((goFreq, nogoFreq, probeFreq))
+
+        sortedInd = np.argsort(soundFreqTotal)
+        sortedIndTotal = soundIndTotal[sortedInd]
+        sortedFreqTotal = soundFreqTotal[sortedInd]
+        stiSortedInd = np.where(np.in1d(sortedIndTotal, np.concatenate((goCueInd, nogoCueInd))))[0]
+        probeSortedInd = np.where(np.in1d(sortedIndTotal, probeCueInd))[0]
+
+        for ss in range(len(numGo)):
+            numGo[ss] = np.sum(np.logical_and(self.DF.sound_num == ss+1, np.logical_or(self.DF.reward == 2, self.DF.reward==-1)))
+            sound[ss] = np.sum(self.DF.sound_num == ss+1)
+
+        sortednumGo = numGo[sortedInd]
+        sortednumSound = sound[sortedInd]
+
+
+        # fit a softmax function
+        result = minimize(self.neg_log_likelihood, [0.5], args=((sortedFreqTotal[stiSortedInd]-midFreq), (sortednumGo[stiSortedInd] / sortednumSound[stiSortedInd])))
+
+        plt.plot((sortedFreqTotal[stiSortedInd]-midFreq), (sortednumGo[stiSortedInd] / sortednumSound[stiSortedInd]))
+        plt.show()
+
+        # Print the estimated parameters
+        print("Estimated parameters: ", result.x)
+        beta = result.x
+
+        x_fit = np.linspace(6, 16, 100)
+        y_fit = self.softmax(beta, x_fit-midFreq)
+
+        fig, ax = plt.subplots()
+        ax.scatter(sortedFreqTotal[stiSortedInd], sortednumGo[stiSortedInd] / sortednumSound[stiSortedInd])
+        ax.scatter(sortedFreqTotal[probeSortedInd], sortednumGo[probeSortedInd] / sortednumSound[probeSortedInd])
+        ax.plot(x_fit, y_fit)
+
+        ax.plot([midFreq, midFreq], [0, 1], linestyle='--')
+
+        # ax.legend()
+        ax.set_xlabel('Sound (kHz)')
+        ax.set_ylabel('Go rate')
+        plt.show()
+
+    def lick_rate(self):
+        lickTimesH = np.array([])  # lick rate for Hit trials
+        lickTimesFA =np.array([])   # lick rage for False alarm trials
+        #lickSoundH = np.array(self.DF.sound_num[self.DF.reward==2])
+        #lickSoundFA = np.array(self.DF.sound_num[self.DF.reward==-1])
+        lickSoundH = np.array([])
+        lickSoundFA = np.array([])
+
+        binSize = 0.05  # use a 0.05s window for lick rate
+        edges = np.arange(0 + binSize / 2, 3 - binSize / 2, binSize)
+
+        for tt in range(self.trialN):
+            if self.DF.reward[tt] == 2:
+                lickTimesH = np.concatenate((lickTimesH, (np.array(self.DF.licks[tt]) - self.DF.onset[tt])))
+                lickSoundH = np.concatenate((lickSoundH, np.ones(len(np.array(self.DF.licks[tt])))*self.DF.sound_num[tt]))
+            elif self.DF.reward[tt] == -1:
+                lickTimesFA = np.concatenate((lickTimesFA, (np.array(self.DF.licks[tt]) - self.DF.onset[tt])))
+                lickSoundFA = np.concatenate(
+                    (lickSoundFA, np.ones(len(np.array(self.DF.licks[tt]))) * self.DF.sound_num[tt]))
+
+        lickRateH = np.zeros((len(edges), 4))
+        lickRateFA = np.zeros((len(edges), 4))
+
+        for ee in range(len(edges)):
+            for ssH in range(4):
+                lickRateH[ee,ssH] = sum(
+                    np.logical_and(lickTimesH[lickSoundH==(ssH+1)] <= edges[ee] + binSize / 2, lickTimesH[lickSoundH==(ssH+1)] > edges[ee] - binSize / 2)) / (
+                                    binSize * sum(np.logical_and(np.array(self.DF.reward == 2), np.array(self.DF.sound_num)==(ssH+1))))
+            for ssFA in range(4):
+                lickRateFA[ee, ssFA] = sum(
+                    np.logical_and(lickTimesFA[lickSoundFA == (ssFA + 5)] <= edges[ee] + binSize / 2,
+                                   lickTimesFA[lickSoundFA == (ssFA + 5)] > edges[ee] - binSize / 2)) / (
+                                             binSize * sum(np.logical_and(np.array(self.DF.reward == -1),
+                                                                          np.array(self.DF.sound_num) == (ssFA + 5))))
+
+        # plot the response time distribution in hit/false alarm trials
+        fig, ax = plt.subplots()
+
+        ax.plot(edges, np.sum(lickRateH, axis=1))
+        ax.plot(edges, np.sum(lickRateFA, axis=1))
+
+        ax.set_xlabel('Time from cue (s)')
+        ax.set_ylabel('Frequency (Hz)')
+        ax.set_title('Lick rate (Hz)')
+        ax.spines['top'].set_visible(False)
+        ax.spines['right'].set_visible(False)
+        legend = ax.legend(['Hit', 'False alarm'])
+        legend.get_frame().set_linewidth(0.0)
+        legend.get_frame().set_facecolor('none')
+
+        plt.show()
+
+        # separate the lick rate into different frequencies
+        fig, axs = plt.subplots(2, 4, figsize=(8, 8), sharey=True)
+
+        # plot hit
+        for ii in range(4):
+            axs[0, ii].plot(edges, lickRateH[:,ii])
+            axs[0, ii].set_title(['Sound # ', str(ii + 1)])
+
+        # plot false alarm
+        for jj in range(4):
+            axs[1, jj].plot(edges, lickRateFA[:, jj])
+            axs[1, jj].set_title(['Sound # ', str(jj + 5)])
+
+        plt.subplots_adjust(top=0.85)
+        plt.show()
+
+    def response_time(self):
+        rt = np.zeros(self.trialN)
+
+        for tt in range(len(rt)):
+            rt[tt] = self.DF.first_lick_in[tt] - self.DF.onset[tt]
+
+        # plot the response time distribution in hit/false alarm trials
+        fig, ax = plt.subplots()
+        _, bins, _ = plt.hist(rt[np.array(self.DF.reward) == 2], bins=50, range=[0, .5])
+        _ = plt.hist(rt[np.array(self.DF.reward) == -1], bins=bins, density=True)
+
+        ax.set_xlabel('Response time (s)')
+        ax.set_ylabel('Frequency (%)')
+        ax.set_title('Response time (s)')
+
+        ax.spines['top'].set_visible(False)
+        ax.spines['right'].set_visible(False)
+        legend = ax.legend(['Hit', 'False alarm'])
+        legend.get_frame().set_linewidth(0.0)
+        legend.get_frame().set_facecolor('none')
+
+        plt.show()
+
+        # separate the response time into different frequencies
+        fig, axs = plt.subplots(2,4,figsize=(8, 8), sharey=True)
+
+        # plot hit
+        for ii in range(4):
+            if ii == 0:
+                _, bins, _ = axs[0,ii].hist(rt[np.logical_and(np.array(self.DF.reward) == 2, self.DF.sound_num.array==(ii+1))], bins=50, range=[0, .5])
+            else:
+                _ = axs[0,ii].hist(rt[np.logical_and(np.array(self.DF.reward) == 2, self.DF.sound_num.array==(ii+1))], bins=bins)
+            axs[0, ii].set_title(['Sound # ', str(ii+1)])
+
+        # plot false alarm
+        for jj in range(4):
+            _ = axs[1, jj].hist(rt[np.logical_and(np.array(self.DF.reward) == -1, self.DF.sound_num.array == (jj + 5))],bins=bins)
+            axs[1, jj].set_title(['Sound # ', str(jj + 5)])
+
+        plt.subplots_adjust(top=0.85)
+        plt.show()
+
+    def ITI_distribution(self):
+        ITIH = []  # lick rate for Hit trials
+        ITIFA = []  # lick rage for False alarm trials
+
+        ITISoundH = np.array(self.DF.sound_num[np.logical_and(self.DF.reward==2, self.DF.trial!=self.trialN)])
+        ITISoundFA = np.array(self.DF.sound_num[np.logical_and(self.DF.reward==-1,self.DF.trial!=self.trialN)])
+
+        binSize = 0.05  # use a 0.05s window for lick rate
+        edges = np.arange(0 + binSize / 2, 20- binSize / 2, binSize)
+
+        for tt in range(self.trialN-1):
+            if self.DF.reward[tt] == 2:
+
+                ITIH.append(self.DF.onset[tt+1] - self.DF.outcome[tt])
+
+
+            elif self.DF.reward[tt] == -1:
+                ITIFA.append(self.DF.onset[tt+1] - self.DF.outcome[tt])
+
+
+        # convert to np.arrays
+        ITIH = np.array(ITIH)
+        ITIFA = np.array(ITIFA)
+
+        ITIRateH = np.zeros((len(edges), 4))
+        ITIRateFA = np.zeros((len(edges), 4))
+
+        for ee in range(len(edges)):
+            for ssH in range(4):
+                ITIRateH[ee, ssH] = sum(
+                    np.logical_and(ITIH[ITISoundH == (ssH + 1)] <= edges[ee] + binSize / 2,
+                                   ITIH[ITISoundH == (ssH + 1)] > edges[ee] - binSize / 2))
+            for ssFA in range(4):
+                ITIRateFA[ee, ssFA] = sum(
+                    np.logical_and(ITIFA[ITISoundFA == (ssFA + 5)] <= edges[ee] + binSize / 2,
+                                   ITIFA[ITISoundFA == (ssFA + 5)] > edges[ee] - binSize / 2))
+
+        # plot
+        fig, ax = plt.subplots()
+
+        ax.plot(edges, np.sum(ITIRateH, axis=1))
+        ax.plot(edges, np.sum(ITIRateFA, axis=1))
+
+        ax.set_xlabel('ITI duration (s)')
+        ax.set_ylabel('Trials')
+        ax.set_title('ITI distribution')
+        ax.spines['top'].set_visible(False)
+        ax.spines['right'].set_visible(False)
+        legend = ax.legend(['Hit', 'False alarm'])
+        legend.get_frame().set_linewidth(0.0)
+        legend.get_frame().set_facecolor('none')
+
+        plt.show()
+
+        # separate the lick rate into different frequencies
+        fig, axs = plt.subplots(2, 4, figsize=(8, 8), sharey=True)
+
+        # plot hit
+        for ii in range(4):
+            axs[0, ii].plot(edges, ITIRateH[:, ii])
+            axs[0, ii].set_title(['Sound # ', str(ii + 1)])
+
+        # plot false alarm
+        for jj in range(4):
+            axs[1, jj].plot(edges, ITIRateFA[:, jj])
+            axs[1, jj].set_title(['Sound # ', str(jj + 5)])
+
+        plt.subplots_adjust(top=0.85)
+        plt.show()
+
+    def running_aligned(self):
+
+        # aligned to cue onset and interpolate the results
+        interpT = np.arange(-3,5,0.1)
+
+        run_aligned = np.zeros((len(interpT), self.trialN))
+
+        for tt in range(self.trialN-1):
+            speed = np.array(self.DF.running_speed[tt])
+            if speed.size != 0:
+                t = speed[0,:,0] - self.DF.onset[tt]
+                y = speed[0,:,1]
+                y_interp = np.interp(interpT, t, y)
+                run_aligned[:,tt] = y_interp
+
+        # plot average running speed aligned to cue time
+
+        # bootstrap the value
+        numBoot = 1000
+
+        BootH = self.bootstrap(run_aligned[:,self.DF.reward==2], dim=1, n_sample=1000)
+        BootFA = self.bootstrap(run_aligned[:,self.DF.reward==-1], dim=1, n_sample=1000)
+        BootNL = self.bootstrap(run_aligned[:,self.DF.reward==0], dim=1, n_sample=1000)
+
+        fig, ax0 = plt.subplots()
+
+        ax0.plot(interpT, BootH['bootAve'],linewidth = 4)
+        ax0.fill_between(interpT, BootH['bootLow'], BootH['bootHigh'],alpha=0.2)
+        ax0.set_title('Hit')
+        ax0.set_xlabel('Time from cue (s)')
+        ax0.set_ylabel('Running speed')
+        ax0.spines['top'].set_visible(False)
+        ax0.spines['right'].set_visible(False)
+
+        fig, ax1 = plt.subplots()
+        ax1.plot(interpT, BootFA['bootAve'],linewidth = 4)
+        ax1.fill_between(interpT, BootFA['bootLow'], BootFA['bootHigh'],alpha=0.2)
+        ax1.set_title('False alarm')
+        ax1.set_xlabel('Time from cue (s)')
+        ax1.set_ylabel('Running speed')
+        ax1.spines['top'].set_visible(False)
+        ax1.spines['right'].set_visible(False)
+        #axs[1].set_xlabel('Time from cue (s)')
+        #axs[1].spines['top'].set_visible(False)
+        #axs[1].spines['right'].set_visible(False)
+
+        fig, ax2 = plt.subplots()
+        ax2.plot(interpT, BootNL['bootAve'],linewidth = 4)
+        ax2.fill_between(interpT, BootNL['bootLow'], BootNL['bootHigh'],alpha=0.2)
+        ax2.set_title('No lick')
+        ax2.set_xlabel('Time from cue (s)')
+        ax2.set_ylabel('Running speed')
+        ax2.spines['top'].set_visible(False)
+        ax2.spines['right'].set_visible(False)
+
+        #axs[0:2].set_xlabel('Time from cue (s)')
+        #axs[0:2].spines['top'].set_visible(False)
+        #axs[0:2].spines['right'].set_visible(False)
+
+        #axs[0].set_ylabel('Running speed')
+
+
+        #legend = ax.legend(['Hit', 'False alarm','No lick'])
+        #legend.get_frame().set_linewidth(0.0)
+        #legend.get_frame().set_facecolor('none')
+
+        plt.show()
+
+
+
+    ### analysis methods for behavior
+    def fit_softmax(self, x, y):
+        # Fit the softmax function to the data using scipy.optimize.minimize
+        result = minimize(self.neg_log_likelihood, [0.5], args=(x, y))
+
+
+    #define the softmax function
+    def softmax(self, beta, x):
+
+        return 1 / (1 + (np.exp(beta*x)))
+
+    # Define the negative log-likelihood function
+    def neg_log_likelihood(self, beta, x, y):
+        p = self.softmax(beta, x)
+        return -np.sum(y * np.log(p))
+
+    def bootstrap(self, data, dim, n_sample):
+
+        # Resample the rows of the matrix with replacement
+        bootstrap_indices = np.random.choice(data.shape[dim], size=(n_sample, data.shape[dim]), replace=True)
+
+        # Bootstrap the matrix along the chosen dimension
+        bootstrapped_matrix = np.take(data, bootstrap_indices, axis=dim)
+
+        bootAve = np.mean(bootstrapped_matrix,axis = (1,2))
+        bootHigh = np.percentile(bootstrapped_matrix, 97.5, axis = (1,2))
+        bootLow = np.percentile(bootstrapped_matrix, 2.5, axis = (1,2))
+
+        tempData = {'bootAve': bootAve, 'bootHigh': bootHigh, 'bootLow': bootLow}
+        index = np.arange(len(bootAve))
+        bootRes = pd.DataFrame(tempData,index)
+
+        return bootRes
+
 
 if __name__ == "__main__":
     animal = 'JUV011'
     session = '211215'
-    input_folder = "C:\\Users\\hongl\\Documents\\GitHub\\madeline_go_nogo\\data"
+    #input_folder = "C:\\Users\\hongl\\Documents\\GitHub\\madeline_go_nogo\\data"
+    input_folder = "C:\\Users\\xiachong\\Documents\\GitHub\\madeline_go_nogo\\data"
     input_file = "JUV015_220409_behaviorLOG.mat"
     x = GoNogoBehaviorMat(animal, session, os.path.join(input_folder, input_file))
     output_file = f"{animal}_{session}_behavior_output"
     x.output_df(os.path.join(input_folder, output_file))
 
 
+    # test code for plot
+
+    #x.psycho_curve()
+    #x.response_time()
+    #x.lick_rate()
+    #x.ITI_distribution()
+    x.running_aligned()
