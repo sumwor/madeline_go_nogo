@@ -150,7 +150,8 @@ class GoNogoBehaviorMat(BehaviorMat):
 
             elif node.event == 'in':
                 # add a list contain all licks in the trial
-                if not result_df.loc[node.trial_index()-1, 'licks']:
+
+                if not result_df.at[node.trial_index()-1, 'licks']:
                     result_df.at[node.trial_index()-1, 'licks'] = [node.etime-time_0]
                 else:
                     result_df.at[node.trial_index()-1, 'licks'].append(node.etime-time_0)
