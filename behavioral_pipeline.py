@@ -4,6 +4,7 @@ import numpy as np
 import pandas as pd
 import h5py
 import os
+from pyPlotHW import StartPlots, StartSubplots
 
 import matplotlib.pyplot as plt
 from scipy.optimize import minimize
@@ -188,7 +189,12 @@ class GoNogoBehaviorMat(BehaviorMat):
         result_df['running_speed'] = [[] for _ in range(self.trialN)]  # convert to np.array later
 
         # remap reward to self.outcome
-        # -4: probeSti, no lick; -3: probSti, lick; -2: miss; -1: false alarm; 0: correct reject; 1/2: hit for reward amount 1/2
+        # -4: probeSti, no lick;
+        # -3: probSti, lick;
+        # -2: miss;
+        # -1: false alarm;
+        # 0: correct reject;
+        # 1/2: hit for reward amount
 
         for tt in range(self.trialN):
             t_start = result_df.onset[tt]
@@ -227,9 +233,47 @@ class GoNogoBehaviorMat(BehaviorMat):
 
     def beh_session(self):
         # plot the outcome according to trials
-        fig, ax = plt.subplots()
-        ax.scatter(np.arange(self.trialN), self.DF.reward)
+        trialNum = np.arange(self.trialN)
+
+        beh_plots = StartPlots()
+        # hit trials
+        beh_plots.ax.scatter(trialNum[self.DF.choice == 2], np.array(self.DF.choice[self.DF.choice == 2]),
+                   s=100, marker='o')
+
+        # miss trials
+        beh_plots.ax.scatter(trialNum[self.DF.choice == -2], self.DF.choice[self.DF.choice == -2], s=100,
+                   marker='x')
+
+        # false alarm
+        beh_plots.ax.scatter(trialNum[self.DF.choice == -1], self.DF.choice[self.DF.choice == -1], s=100,
+                   marker='*')
+
+        # correct rejection
+        beh_plots.ax.scatter(trialNum[self.DF.choice == 0], self.DF.choice[self.DF.choice == 0], s=100,
+                   marker='.')
+
+        # probe lick
+        beh_plots.ax.scatter(trialNum[self.DF.choice == -3], self.DF.choice[self.DF.choice == -3], s=100,
+                   marker='v')
+
+        # proble no lick
+        beh_plots.ax.scatter(trialNum[self.DF.choice == -4], self.DF.choice[self.DF.choice == -4], s=100,
+                   marker='^')
+
+        #ax.spines['top'].set_visible(False)
+        #ax.spines['right'].set_visible(False)
+        beh_plots.ax.set_title('Session summary')
+        beh_plots.ax.set_xlabel('Trials')
+        beh_plots.ax.set_ylabel('Outcome')
+        leg = beh_plots.legend(['Hit', 'Miss', 'False alarm', 'Correct rejection', 'Probe lick', 'Probe miss'])
+
+        #legend.get_frame().set_linewidth(0.0)
+        #legend.get_frame().set_facecolor('none')
+        beh_plots.fig.set_figwidth(40)
         plt.show()
+
+        return beh_plots
+        # trialbytrial.beh_session()
 
     def psycho_curve(self):
         # get variables
@@ -244,7 +288,7 @@ class GoNogoBehaviorMat(BehaviorMat):
         goFreq = np.array([6.49, 7.07, 8.46, 9.17])
         nogoFreq = np.array([10.9, 11.9, 14.14, 15.41])
         probeFreq = np.array([6.77, 7.73, 8.81, 9.71, 10.29, 11.38, 12.97, 14.76])
-        midFreq = (9.17+10.09)/2
+        midFreq = (9.17+10.9)/2
 
         # %%
         # psychometric curve
@@ -272,8 +316,8 @@ class GoNogoBehaviorMat(BehaviorMat):
         # fit a softmax function
         result = minimize(self.neg_log_likelihood, [0.5], args=((sortedFreqTotal[stiSortedInd]-midFreq), (sortednumGo[stiSortedInd] / sortednumSound[stiSortedInd])))
 
-        plt.plot((sortedFreqTotal[stiSortedInd]-midFreq), (sortednumGo[stiSortedInd] / sortednumSound[stiSortedInd]))
-        plt.show()
+        #psyCurve.ax.plot((sortedFreqTotal[stiSortedInd]-midFreq), (sortednumGo[stiSortedInd] / sortednumSound[stiSortedInd]))
+        #plt.show()
 
         # Print the estimated parameters
         print("Estimated parameters: ", result.x)
@@ -282,17 +326,19 @@ class GoNogoBehaviorMat(BehaviorMat):
         x_fit = np.linspace(6, 16, 100)
         y_fit = self.softmax(beta, x_fit-midFreq)
 
-        fig, ax = plt.subplots()
-        ax.scatter(sortedFreqTotal[stiSortedInd], sortednumGo[stiSortedInd] / sortednumSound[stiSortedInd])
-        ax.scatter(sortedFreqTotal[probeSortedInd], sortednumGo[probeSortedInd] / sortednumSound[probeSortedInd])
-        ax.plot(x_fit, y_fit)
+        psyCurve = StartPlots()
+        psyCurve.ax.scatter(sortedFreqTotal[stiSortedInd], sortednumGo[stiSortedInd] / sortednumSound[stiSortedInd])
+        psyCurve.ax.scatter(sortedFreqTotal[probeSortedInd], sortednumGo[probeSortedInd] / sortednumSound[probeSortedInd])
+        psyCurve.ax.plot(x_fit, y_fit)
 
-        ax.plot([midFreq, midFreq], [0, 1], linestyle='--')
+        psyCurve.ax.plot([midFreq, midFreq], [0, 1], linestyle='--')
 
         # ax.legend()
-        ax.set_xlabel('Sound (kHz)')
-        ax.set_ylabel('Go rate')
+        psyCurve.ax.set_xlabel('Sound (kHz)')
+        psyCurve.ax.set_ylabel('Go rate')
         plt.show()
+
+        return psyCurve
 
     def lick_rate(self):
         lickTimesH = np.array([])  # lick rate for Hit trials
@@ -330,79 +376,77 @@ class GoNogoBehaviorMat(BehaviorMat):
                                                                           np.array(self.DF.sound_num) == (ssFA + 5))))
 
         # plot the response time distribution in hit/false alarm trials
-        fig, ax = plt.subplots()
+        lickRate = StartPlots()
 
-        ax.plot(edges, np.sum(lickRateH, axis=1))
-        ax.plot(edges, np.sum(lickRateFA, axis=1))
+        lickRate.ax.plot(edges, np.sum(lickRateH, axis=1))
+        lickRate.ax.plot(edges, np.sum(lickRateFA, axis=1))
 
-        ax.set_xlabel('Time from cue (s)')
-        ax.set_ylabel('Frequency (Hz)')
-        ax.set_title('Lick rate (Hz)')
-        ax.spines['top'].set_visible(False)
-        ax.spines['right'].set_visible(False)
-        legend = ax.legend(['Hit', 'False alarm'])
-        legend.get_frame().set_linewidth(0.0)
-        legend.get_frame().set_facecolor('none')
+        lickRate.ax.set_xlabel('Time from cue (s)')
+        lickRate.ax.set_ylabel('Frequency (Hz)')
+        lickRate.ax.set_title('Lick rate (Hz)')
+
+        lickRate.ax.legend(['Hit', 'False alarm'])
 
         plt.show()
 
+        return lickRate
         # separate the lick rate into different frequencies
-        fig, axs = plt.subplots(2, 4, figsize=(8, 8), sharey=True)
-
-        # plot hit
-        for ii in range(4):
-            axs[0, ii].plot(edges, lickRateH[:,ii])
-            axs[0, ii].set_title(['Sound # ', str(ii + 1)])
-
-        # plot false alarm
-        for jj in range(4):
-            axs[1, jj].plot(edges, lickRateFA[:, jj])
-            axs[1, jj].set_title(['Sound # ', str(jj + 5)])
-
-        plt.subplots_adjust(top=0.85)
-        plt.show()
+        # fig, axs = plt.subplots(2, 4, figsize=(8, 8), sharey=True)
+        #
+        # # plot hit
+        # for ii in range(4):
+        #     axs[0, ii].plot(edges, lickRateH[:,ii])
+        #     axs[0, ii].set_title(['Sound # ', str(ii + 1)])
+        #
+        # # plot false alarm
+        # for jj in range(4):
+        #     axs[1, jj].plot(edges, lickRateFA[:, jj])
+        #     axs[1, jj].set_title(['Sound # ', str(jj + 5)])
+        #
+        # plt.subplots_adjust(top=0.85)
+        # plt.show()
 
     def response_time(self):
+        """
+        aligned_to: time point to be aligned. cue/outcome/licks
+        """
         rt = np.zeros(self.trialN)
 
         for tt in range(len(rt)):
             rt[tt] = self.DF.first_lick_in[tt] - self.DF.onset[tt]
 
         # plot the response time distribution in hit/false alarm trials
-        fig, ax = plt.subplots()
-        _, bins, _ = plt.hist(rt[np.array(self.DF.reward) == 2], bins=50, range=[0, .5])
-        _ = plt.hist(rt[np.array(self.DF.reward) == -1], bins=bins, density=True)
+        rtPlot = StartPlots()
+        _, bins, _ = rtPlot.ax.hist(rt[np.array(self.DF.reward) == 2], bins=50, range=[0, .5])
+        _ = rtPlot.ax.hist(rt[np.array(self.DF.reward) == -1], bins=bins, density=True)
 
-        ax.set_xlabel('Response time (s)')
-        ax.set_ylabel('Frequency (%)')
-        ax.set_title('Response time (s)')
+        rtPlot.ax.set_xlabel('Response time (s)')
+        rtPlot.ax.set_ylabel('Frequency (%)')
+        rtPlot.ax.set_title('Response time (s)')
 
-        ax.spines['top'].set_visible(False)
-        ax.spines['right'].set_visible(False)
-        legend = ax.legend(['Hit', 'False alarm'])
-        legend.get_frame().set_linewidth(0.0)
-        legend.get_frame().set_facecolor('none')
+        rtPlot.ax.legend(['Hit', 'False alarm'])
 
         plt.show()
 
+        return rtPlot
         # separate the response time into different frequencies
-        fig, axs = plt.subplots(2,4,figsize=(8, 8), sharey=True)
-
-        # plot hit
-        for ii in range(4):
-            if ii == 0:
-                _, bins, _ = axs[0,ii].hist(rt[np.logical_and(np.array(self.DF.reward) == 2, self.DF.sound_num.array==(ii+1))], bins=50, range=[0, .5])
-            else:
-                _ = axs[0,ii].hist(rt[np.logical_and(np.array(self.DF.reward) == 2, self.DF.sound_num.array==(ii+1))], bins=bins)
-            axs[0, ii].set_title(['Sound # ', str(ii+1)])
-
-        # plot false alarm
-        for jj in range(4):
-            _ = axs[1, jj].hist(rt[np.logical_and(np.array(self.DF.reward) == -1, self.DF.sound_num.array == (jj + 5))],bins=bins)
-            axs[1, jj].set_title(['Sound # ', str(jj + 5)])
-
-        plt.subplots_adjust(top=0.85)
-        plt.show()
+        # fig, axs = plt.subplots(2,4,figsize=(8, 8), sharey=True)
+        #
+        # # plot hit
+        # for ii in range(4):
+        #     if ii == 0:
+        #         _, bins, _ = axs[0,ii].hist(rt[np.logical_and(np.array(self.DF.reward) == 2, self.DF.sound_num.array==(ii+1))], bins=50, range=[0, .5])
+        #     else:
+        #         _ = axs[0,ii].hist(rt[np.logical_and(np.array(self.DF.reward) == 2, self.DF.sound_num.array==(ii+1))], bins=bins)
+        #     axs[0, ii].set_title(['Sound # ', str(ii+1)])
+        #
+        # # plot false alarm
+        # for jj in range(4):
+        #     _ = axs[1, jj].hist(rt[np.logical_and(np.array(self.DF.reward) == -1, self.DF.sound_num.array == (jj + 5))],bins=bins)
+        #     axs[1, jj].set_title(['Sound # ', str(jj + 5)])
+        #
+        # plt.subplots_adjust(top=0.85)
+        # plt.show()
 
     def ITI_distribution(self):
         ITIH = []  # lick rate for Hit trials
@@ -442,108 +486,139 @@ class GoNogoBehaviorMat(BehaviorMat):
                                    ITIFA[ITISoundFA == (ssFA + 5)] > edges[ee] - binSize / 2))
 
         # plot
-        fig, ax = plt.subplots()
+        ITIPlot = StartPlots()
 
-        ax.plot(edges, np.sum(ITIRateH, axis=1))
-        ax.plot(edges, np.sum(ITIRateFA, axis=1))
+        ITIPlot.ax.plot(edges, np.sum(ITIRateH, axis=1))
+        ITIPlot.ax.plot(edges, np.sum(ITIRateFA, axis=1))
 
-        ax.set_xlabel('ITI duration (s)')
-        ax.set_ylabel('Trials')
-        ax.set_title('ITI distribution')
-        ax.spines['top'].set_visible(False)
-        ax.spines['right'].set_visible(False)
-        legend = ax.legend(['Hit', 'False alarm'])
-        legend.get_frame().set_linewidth(0.0)
-        legend.get_frame().set_facecolor('none')
+        ITIPlot.ax.set_xlabel('ITI duration (s)')
+        ITIPlot.ax.set_ylabel('Trials')
+        ITIPlot.ax.set_title('ITI distribution')
+
+        ITIPlot.ax.legend(['Hit', 'False alarm'])
 
         plt.show()
 
-        # separate the lick rate into different frequencies
-        fig, axs = plt.subplots(2, 4, figsize=(8, 8), sharey=True)
+        return ITIPlot
+        # # separate the lick rate into different frequencies
+        # fig, axs = plt.subplots(2, 4, figsize=(8, 8), sharey=True)
+        #
+        # # plot hit
+        # for ii in range(4):
+        #     axs[0, ii].plot(edges, ITIRateH[:, ii])
+        #     axs[0, ii].set_title(['Sound # ', str(ii + 1)])
+        #
+        # # plot false alarm
+        # for jj in range(4):
+        #     axs[1, jj].plot(edges, ITIRateFA[:, jj])
+        #     axs[1, jj].set_title(['Sound # ', str(jj + 5)])
+        #
+        # plt.subplots_adjust(top=0.85)
+        # plt.show()
 
-        # plot hit
-        for ii in range(4):
-            axs[0, ii].plot(edges, ITIRateH[:, ii])
-            axs[0, ii].set_title(['Sound # ', str(ii + 1)])
-
-        # plot false alarm
-        for jj in range(4):
-            axs[1, jj].plot(edges, ITIRateFA[:, jj])
-            axs[1, jj].set_title(['Sound # ', str(jj + 5)])
-
-        plt.subplots_adjust(top=0.85)
-        plt.show()
-
-    def running_aligned(self):
-
+    def running_aligned(self, aligned_to):
+        """
+        aligned_to: reference time point. onset/outcome/lick
+        """
         # aligned to cue onset and interpolate the results
         interpT = np.arange(-3,5,0.1)
-
-        run_aligned = np.zeros((len(interpT), self.trialN))
-
-        for tt in range(self.trialN-1):
-            speed = np.array(self.DF.running_speed[tt])
-            if speed.size != 0:
-                t = speed[0,:,0] - self.DF.onset[tt]
-                y = speed[0,:,1]
-                y_interp = np.interp(interpT, t, y)
-                run_aligned[:,tt] = y_interp
-
-        # plot average running speed aligned to cue time
-
-        # bootstrap the value
         numBoot = 1000
 
-        BootH = self.bootstrap(run_aligned[:,self.DF.reward==2], dim=1, n_sample=1000)
-        BootFA = self.bootstrap(run_aligned[:,self.DF.reward==-1], dim=1, n_sample=1000)
-        BootNL = self.bootstrap(run_aligned[:,self.DF.reward==0], dim=1, n_sample=1000)
+        if aligned_to == "onset": # aligned to cue time
+            run_aligned = np.full((len(interpT), self.trialN), np.nan)
+            for tt in range(self.trialN-1):
+                speed = np.array(self.DF.running_speed[tt])
+                if speed.size != 0:
+                    t = speed[0,:,0] - self.DF.onset[tt]
+                    y = speed[0,:,1]
+                    y_interp = np.interp(interpT, t, y)
+                    run_aligned[:,tt] = y_interp
 
-        fig, ax0 = plt.subplots()
-
-        ax0.plot(interpT, BootH['bootAve'],linewidth = 4)
-        ax0.fill_between(interpT, BootH['bootLow'], BootH['bootHigh'],alpha=0.2)
-        ax0.set_title('Hit')
-        ax0.set_xlabel('Time from cue (s)')
-        ax0.set_ylabel('Running speed')
-        ax0.spines['top'].set_visible(False)
-        ax0.spines['right'].set_visible(False)
-
-        fig, ax1 = plt.subplots()
-        ax1.plot(interpT, BootFA['bootAve'],linewidth = 4)
-        ax1.fill_between(interpT, BootFA['bootLow'], BootFA['bootHigh'],alpha=0.2)
-        ax1.set_title('False alarm')
-        ax1.set_xlabel('Time from cue (s)')
-        ax1.set_ylabel('Running speed')
-        ax1.spines['top'].set_visible(False)
-        ax1.spines['right'].set_visible(False)
-        #axs[1].set_xlabel('Time from cue (s)')
-        #axs[1].spines['top'].set_visible(False)
-        #axs[1].spines['right'].set_visible(False)
-
-        fig, ax2 = plt.subplots()
-        ax2.plot(interpT, BootNL['bootAve'],linewidth = 4)
-        ax2.fill_between(interpT, BootNL['bootLow'], BootNL['bootHigh'],alpha=0.2)
-        ax2.set_title('No lick')
-        ax2.set_xlabel('Time from cue (s)')
-        ax2.set_ylabel('Running speed')
-        ax2.spines['top'].set_visible(False)
-        ax2.spines['right'].set_visible(False)
-
-        #axs[0:2].set_xlabel('Time from cue (s)')
-        #axs[0:2].spines['top'].set_visible(False)
-        #axs[0:2].spines['right'].set_visible(False)
-
-        #axs[0].set_ylabel('Running speed')
+            # bootstrap
+            BootH = self.bootstrap(run_aligned[:, self.DF.choice == 2], dim=1, n_sample=numBoot)
+            BootFA = self.bootstrap(run_aligned[:, self.DF.choice == -1], dim=1, n_sample=numBoot)
+            BootMiss = self.bootstrap(run_aligned[:, self.DF.choice == -2], dim=1, n_sample=numBoot)
+            BootCorRej = self.bootstrap(run_aligned[:, self.DF.choice == 0], dim=1, n_sample=numBoot)
+            BootProbeLick = self.bootstrap(run_aligned[:, self.DF.choice == -3], dim=1, n_sample=numBoot)
+            BootProbeNoLick = self.bootstrap(run_aligned[:, self.DF.choice == -4], dim=1, n_sample=numBoot)
 
 
-        #legend = ax.legend(['Hit', 'False alarm','No lick'])
-        #legend.get_frame().set_linewidth(0.0)
-        #legend.get_frame().set_facecolor('none')
+        elif aligned_to == 'outcome':
+            run_aligned = np.full((len(interpT), self.trialN), np.nan)
+            for tt in range(self.trialN-1):
+                speed = np.array(self.DF.running_speed[tt])
+                if speed.size != 0:
+                    t = speed[0,:,0] - self.DF.outcome[tt]
+                    y = speed[0,:,1]
+                    y_interp = np.interp(interpT, t, y)
+                    run_aligned[:,tt] = y_interp
+            # bootstrap
+            BootH = self.bootstrap(run_aligned[:, self.DF.choice == 2], dim=1, n_sample=numBoot)
+            BootFA = self.bootstrap(run_aligned[:, self.DF.choice == -1], dim=1, n_sample=numBoot)
+            BootMiss = self.bootstrap(run_aligned[:, self.DF.choice == -2], dim=1, n_sample=numBoot)
+            BootCorRej = self.bootstrap(run_aligned[:, self.DF.choice == 0], dim=1, n_sample=numBoot)
+            BootProbeLick = self.bootstrap(run_aligned[:, self.DF.choice == -3], dim=1, n_sample=numBoot)
+            BootProbeNoLick = self.bootstrap(run_aligned[:, self.DF.choice == -4], dim=1, n_sample=numBoot)
+
+
+        elif aligned_to == 'licks':
+            run_aligned = []
+            for tt in range(self.trialN-1):
+                # loop through licks
+                numLicks = len(self.DF.licks[tt])
+                temp_aligned = np.full((len(interpT), numLicks), np.nan)
+                for ll in range(numLicks):
+                    speed = np.array(self.DF.running_speed[tt])
+                    if speed.size != 0:
+                        t = speed[0,:,0] - self.DF.licks[tt][ll]
+                        y = speed[0,:,1]
+                        y_interp = np.interp(interpT, t, y)
+                        temp_aligned[:,ll] = y_interp
+
+                run_aligned.append(temp_aligned)
+
+            # bootstrap
+            BootH = self.bootstrap(self.concat_data(run_aligned, 2), dim=1, n_sample=numBoot)
+            BootFA = self.bootstrap(self.concat_data(run_aligned, -1), dim=1, n_sample=numBoot)
+            BootMiss = self.bootstrap(self.concat_data(run_aligned, -2), dim=1, n_sample=numBoot)
+            BootCorRej = self.bootstrap(self.concat_data(run_aligned, 0), dim=1, n_sample=numBoot)
+            BootProbeLick = self.bootstrap(self.concat_data(run_aligned, -3), dim=1, n_sample=numBoot)
+            BootProbeNoLick = self.bootstrap(self.concat_data(run_aligned, -4), dim=1, n_sample=numBoot)
+
+
+        runPlot = StartSubplots(2,3,ifSharex=True, ifSharey=True)
+        runPlot.ax[0,0].plot(interpT, BootH['bootAve'])
+        runPlot.ax[0,0].fill_between(interpT, BootH['bootLow'], BootH['bootHigh'],alpha=0.2)
+        runPlot.ax[0,0].set_title('Hit')
+        runPlot.ax[0,0].set_ylabel('Running speed')
+
+        runPlot.ax[0,1].plot(interpT, BootFA['bootAve'])
+        runPlot.ax[0,1].fill_between(interpT, BootFA['bootLow'], BootFA['bootHigh'],alpha=0.2)
+        runPlot.ax[0,1].set_title('False alarm')
+
+        runPlot.ax[0,2].plot(interpT, BootMiss['bootAve'])
+        runPlot.ax[0,2].fill_between(interpT, BootMiss['bootLow'], BootMiss['bootHigh'],alpha=0.2)
+        runPlot.ax[0,2].set_title('Miss')
+
+        runPlot.ax[1,0].plot(interpT, BootCorRej['bootAve'])
+        runPlot.ax[1,0].fill_between(interpT, BootCorRej['bootLow'], BootCorRej['bootHigh'], alpha=0.2)
+        runPlot.ax[1,0].set_title('Correct rejection')
+        runPlot.ax[1,0].set_xlabel('Time from cue (s)')
+        runPlot.ax[1,0].set_ylabel('Running speed')
+
+        runPlot.ax[1,1].plot(interpT, BootProbeLick['bootAve'])
+        runPlot.ax[1,1].fill_between(interpT, BootProbeLick['bootLow'], BootProbeLick['bootHigh'], alpha=0.2)
+        runPlot.ax[1,1].set_title('Probe lick')
+        runPlot.ax[1,1].set_xlabel('Time from cue (s)')
+
+        runPlot.ax[1,2].plot(interpT, BootProbeNoLick['bootAve'])
+        runPlot.ax[1,2].fill_between(interpT, BootProbeNoLick['bootLow'], BootProbeNoLick['bootHigh'], alpha=0.2)
+        runPlot.ax[1,2].set_title('Probe nolick')
+        runPlot.ax[1,2].set_xlabel('Time from cue (s)')
 
         plt.show()
 
-
-
+        return runPlot
     ### analysis methods for behavior
     def fit_softmax(self, x, y):
         # Fit the softmax function to the data using scipy.optimize.minimize
@@ -560,19 +635,39 @@ class GoNogoBehaviorMat(BehaviorMat):
         p = self.softmax(beta, x)
         return -np.sum(y * np.log(p))
 
+    def concat_data(self, data, outcome):
+        # concatenate a list whose elements have different size
+        # extract the trials with certain outcome and concatenate the running speed aligned to licks
+        trialInd = [i for i, e in enumerate(self.DF.choice) if e == outcome]
+        output = np.array([])
+        for tt in trialInd:
+            if tt < self.trialN-1:
+                output = data[tt] if not output.size else np.concatenate((output, data[tt]),axis=1)
+
+        return output
+
     def bootstrap(self, data, dim, n_sample):
 
         # Resample the rows of the matrix with replacement
-        bootstrap_indices = np.random.choice(data.shape[dim], size=(n_sample, data.shape[dim]), replace=True)
+        if data.shape[dim]: # if input data is not empty
+            bootstrap_indices = np.random.choice(data.shape[dim], size=(n_sample, data.shape[dim]), replace=True)
 
-        # Bootstrap the matrix along the chosen dimension
-        bootstrapped_matrix = np.take(data, bootstrap_indices, axis=dim)
+            # Bootstrap the matrix along the chosen dimension
+            bootstrapped_matrix = np.take(data, bootstrap_indices, axis=dim)
 
-        bootAve = np.mean(bootstrapped_matrix,axis = (1,2))
-        bootHigh = np.percentile(bootstrapped_matrix, 97.5, axis = (1,2))
-        bootLow = np.percentile(bootstrapped_matrix, 2.5, axis = (1,2))
+            bootAve = np.mean(bootstrapped_matrix,axis = (1,2))
+            bootHigh = np.percentile(bootstrapped_matrix, 97.5, axis = (1,2))
+            bootLow = np.percentile(bootstrapped_matrix, 2.5, axis = (1,2))
 
-        tempData = {'bootAve': bootAve, 'bootHigh': bootHigh, 'bootLow': bootLow}
+        else: # return nans
+            bootAve = np.full((data.shape[0]), np.nan)
+            bootLow = np.full((data.shape[0]), np.nan)
+            bootHigh = np.full((data.shape[0]), np.nan)
+            #bootstrapped_matrix = np.array([np.nan])
+
+        #bootstrapped_2d = bootstrapped_matrix.reshape(80,-1)
+        # need to find a way to output raw bootstrap results
+        tempData = { 'bootAve': bootAve, 'bootHigh': bootHigh, 'bootLow': bootLow}
         index = np.arange(len(bootAve))
         bootRes = pd.DataFrame(tempData,index)
 
@@ -582,8 +677,8 @@ class GoNogoBehaviorMat(BehaviorMat):
 if __name__ == "__main__":
     animal = 'JUV011'
     session = '211215'
-    #input_folder = "C:\\Users\\hongl\\Documents\\GitHub\\madeline_go_nogo\\data"
-    input_folder = "C:\\Users\\xiachong\\Documents\\GitHub\\madeline_go_nogo\\data"
+    input_folder = "C:\\Users\\hongl\\Documents\\GitHub\\madeline_go_nogo\\data"
+    #input_folder = "C:\\Users\\xiachong\\Documents\\GitHub\\madeline_go_nogo\\data"
     input_file = "JUV015_220409_behaviorLOG.mat"
     x = GoNogoBehaviorMat(animal, session, os.path.join(input_folder, input_file))
     output_file = f"{animal}_{session}_behavior_output"
@@ -596,4 +691,4 @@ if __name__ == "__main__":
     #x.response_time()
     #x.lick_rate()
     #x.ITI_distribution()
-    x.running_aligned()
+    x.running_aligned('licks')
