@@ -343,49 +343,62 @@ class GoNogoBehaviorMat(BehaviorMat):
     def lick_rate(self):
         lickTimesH = np.array([])  # lick rate for Hit trials
         lickTimesFA =np.array([])   # lick rage for False alarm trials
+        lickTimesProbe = np.array([])
         #lickSoundH = np.array(self.DF.sound_num[self.DF.reward==2])
         #lickSoundFA = np.array(self.DF.sound_num[self.DF.reward==-1])
         lickSoundH = np.array([])
         lickSoundFA = np.array([])
+        lickSoundProbe = np.array([])
 
         binSize = 0.05  # use a 0.05s window for lick rate
-        edges = np.arange(0 + binSize / 2, 3 - binSize / 2, binSize)
+        edges = np.arange(0 + binSize / 2, 5 - binSize / 2, binSize)
 
         for tt in range(self.trialN):
-            if self.DF.reward[tt] == 2:
+            if self.DF.choice[tt] == 2:
                 lickTimesH = np.concatenate((lickTimesH, (np.array(self.DF.licks[tt]) - self.DF.onset[tt])))
                 lickSoundH = np.concatenate((lickSoundH, np.ones(len(np.array(self.DF.licks[tt])))*self.DF.sound_num[tt]))
-            elif self.DF.reward[tt] == -1:
+            elif self.DF.choice[tt] == -1:
                 lickTimesFA = np.concatenate((lickTimesFA, (np.array(self.DF.licks[tt]) - self.DF.onset[tt])))
                 lickSoundFA = np.concatenate(
                     (lickSoundFA, np.ones(len(np.array(self.DF.licks[tt]))) * self.DF.sound_num[tt]))
+            elif self.DF.choice[tt] == -3:
+                lickTimesProbe = np.concatenate((lickTimesProbe, (np.array(self.DF.licks[tt]) - self.DF.onset[tt])))
+                lickSoundProbe = np.concatenate(
+                    (lickSoundProbe, np.ones(len(np.array(self.DF.licks[tt]))) * self.DF.sound_num[tt]))
 
         lickRateH = np.zeros((len(edges), 4))
         lickRateFA = np.zeros((len(edges), 4))
+        lickRateProbe = np.zeros((len(edges), 8))
 
         for ee in range(len(edges)):
             for ssH in range(4):
                 lickRateH[ee,ssH] = sum(
                     np.logical_and(lickTimesH[lickSoundH==(ssH+1)] <= edges[ee] + binSize / 2, lickTimesH[lickSoundH==(ssH+1)] > edges[ee] - binSize / 2)) / (
-                                    binSize * sum(np.logical_and(np.array(self.DF.reward == 2), np.array(self.DF.sound_num)==(ssH+1))))
+                                    binSize * sum(np.logical_and(np.array(self.DF.choice == 2), np.array(self.DF.sound_num)==(ssH+1))))
             for ssFA in range(4):
                 lickRateFA[ee, ssFA] = sum(
                     np.logical_and(lickTimesFA[lickSoundFA == (ssFA + 5)] <= edges[ee] + binSize / 2,
                                    lickTimesFA[lickSoundFA == (ssFA + 5)] > edges[ee] - binSize / 2)) / (
-                                             binSize * sum(np.logical_and(np.array(self.DF.reward == -1),
+                                             binSize * sum(np.logical_and(np.array(self.DF.choice == -1),
                                                                           np.array(self.DF.sound_num) == (ssFA + 5))))
-
+            for ssProbe in range(8):
+                lickRateProbe[ee, ssProbe] = sum(
+                    np.logical_and(lickTimesProbe[lickSoundProbe == (ssProbe + 9)] <= edges[ee] + binSize / 2,
+                                   lickTimesProbe[lickSoundProbe == (ssProbe + 9)] > edges[ee] - binSize / 2)) / (
+                                               binSize * sum(np.logical_and(np.array(self.DF.choice == -3),
+                                                                            np.array(self.DF.sound_num) == (ssProbe + 9))))
         # plot the response time distribution in hit/false alarm trials
         lickRate = StartPlots()
 
-        lickRate.ax.plot(edges, np.sum(lickRateH, axis=1))
-        lickRate.ax.plot(edges, np.sum(lickRateFA, axis=1))
+        lickRate.ax.plot(edges, np.nansum(lickRateH, axis=1))
+        lickRate.ax.plot(edges, np.nansum(lickRateFA, axis=1))
+        lickRate.ax.plot(edges, np.nansum(lickRateProbe, axis=1))
 
         lickRate.ax.set_xlabel('Time from cue (s)')
         lickRate.ax.set_ylabel('Frequency (Hz)')
         lickRate.ax.set_title('Lick rate (Hz)')
 
-        lickRate.ax.legend(['Hit', 'False alarm'])
+        lickRate.ax.legend(['Hit', 'False alarm','Probe lick'])
 
         plt.show()
 
@@ -417,8 +430,9 @@ class GoNogoBehaviorMat(BehaviorMat):
 
         # plot the response time distribution in hit/false alarm trials
         rtPlot = StartPlots()
-        _, bins, _ = rtPlot.ax.hist(rt[np.array(self.DF.reward) == 2], bins=50, range=[0, .5])
-        _ = rtPlot.ax.hist(rt[np.array(self.DF.reward) == -1], bins=bins, density=True)
+        _, bins, _ = rtPlot.ax.hist(rt[np.array(self.DF.choice) == 2], bins=50, range=[0, .5])
+        _ = rtPlot.ax.hist(rt[np.array(self.DF.choice) == -1], bins=bins, density=True)
+        #_ = rtPlot.ax.hist(rt[np.array(self.DF.choice) == -3], bins=bins, density=True)
 
         rtPlot.ax.set_xlabel('Response time (s)')
         rtPlot.ax.set_ylabel('Frequency (%)')
@@ -587,6 +601,9 @@ class GoNogoBehaviorMat(BehaviorMat):
 
 
         runPlot = StartSubplots(2,3,ifSharex=True, ifSharey=True)
+
+        runPlot.fig.suptitle('Aligned to '+aligned_to)
+
         runPlot.ax[0,0].plot(interpT, BootH['bootAve'])
         runPlot.ax[0,0].fill_between(interpT, BootH['bootLow'], BootH['bootHigh'],alpha=0.2)
         runPlot.ax[0,0].set_title('Hit')
@@ -603,18 +620,18 @@ class GoNogoBehaviorMat(BehaviorMat):
         runPlot.ax[1,0].plot(interpT, BootCorRej['bootAve'])
         runPlot.ax[1,0].fill_between(interpT, BootCorRej['bootLow'], BootCorRej['bootHigh'], alpha=0.2)
         runPlot.ax[1,0].set_title('Correct rejection')
-        runPlot.ax[1,0].set_xlabel('Time from cue (s)')
+        runPlot.ax[1,0].set_xlabel('Time (s)')
         runPlot.ax[1,0].set_ylabel('Running speed')
 
         runPlot.ax[1,1].plot(interpT, BootProbeLick['bootAve'])
         runPlot.ax[1,1].fill_between(interpT, BootProbeLick['bootLow'], BootProbeLick['bootHigh'], alpha=0.2)
         runPlot.ax[1,1].set_title('Probe lick')
-        runPlot.ax[1,1].set_xlabel('Time from cue (s)')
+        runPlot.ax[1,1].set_xlabel('Time (s)')
 
         runPlot.ax[1,2].plot(interpT, BootProbeNoLick['bootAve'])
         runPlot.ax[1,2].fill_between(interpT, BootProbeNoLick['bootLow'], BootProbeNoLick['bootHigh'], alpha=0.2)
         runPlot.ax[1,2].set_title('Probe nolick')
-        runPlot.ax[1,2].set_xlabel('Time from cue (s)')
+        runPlot.ax[1,2].set_xlabel('Time (s)')
 
         plt.show()
 
@@ -655,9 +672,9 @@ class GoNogoBehaviorMat(BehaviorMat):
             # Bootstrap the matrix along the chosen dimension
             bootstrapped_matrix = np.take(data, bootstrap_indices, axis=dim)
 
-            bootAve = np.mean(bootstrapped_matrix,axis = (1,2))
-            bootHigh = np.percentile(bootstrapped_matrix, 97.5, axis = (1,2))
-            bootLow = np.percentile(bootstrapped_matrix, 2.5, axis = (1,2))
+            bootAve = np.nanmean(bootstrapped_matrix,axis = (1,2))
+            bootHigh = np.nanpercentile(bootstrapped_matrix, 97.5, axis = (1,2))
+            bootLow = np.nanpercentile(bootstrapped_matrix, 2.5, axis = (1,2))
 
         else: # return nans
             bootAve = np.full((data.shape[0]), np.nan)
@@ -689,6 +706,6 @@ if __name__ == "__main__":
 
     #x.psycho_curve()
     #x.response_time()
-    #x.lick_rate()
+    x.lick_rate()
     #x.ITI_distribution()
-    x.running_aligned('licks')
+    #x.running_aligned('outcome')

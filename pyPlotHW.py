@@ -21,7 +21,7 @@ class StartPlots:
 
     def __init__(self):
 
-        self.fig, self.ax = plt.subplots()
+        self.fig, self.ax = plt.subplots(layout="constrained")
 
         # set plot top/right boundaries to invisible
         self.ax.spines['top'].set_visible(False)
@@ -54,7 +54,8 @@ class StartPlots:
 class StartSubplots(StartPlots):
 
     def __init__(self, xdim, ydim, ifSharex=False, ifSharey=False):
-        self.fig, self.ax = plt.subplots(xdim, ydim, sharex=ifSharex, sharey=ifSharey)
+        self.fig, self.ax = plt.subplots(xdim, ydim,  layout="constrained", sharex=ifSharex, sharey=ifSharey)
+        #plt.tight_layout()
 
         # set plot top/right boundaries to invisible
         for xx in range(xdim):
