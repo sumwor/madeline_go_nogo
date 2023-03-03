@@ -367,7 +367,7 @@ class GoNoGo_Expr(NBExperiment):
 if __name__ == "__main__":
     # fields = ['onset', 'first_lick_in',
     #           'last_lick_out', 'water_valve_on', 'outcome']
-    data_root = r'\\filenest.diskstation.me\Wilbrecht_file_server\Madeline\processed_data'
+    data_root = r'Z:\Madeline\processed_data'
     gse = GoNoGo_Expr(data_root)
     animal, session = 'JUV011', '211215'
     bmat, gn_series = gse.load_animal_session(animal, session)
