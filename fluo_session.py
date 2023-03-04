@@ -17,5 +17,7 @@ output_file = f"{animal}_{session}_behavior_output.csv"
 
 beh_df = pd.read_csv (os.path.join(input_folder, output_file))
 
-# preprocess imaging data
-# this part should be moved to another file later
+# preprocess imaging data in fluo_process
+
+# start with df/f here
+

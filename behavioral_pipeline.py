@@ -87,6 +87,23 @@ class GoNogoBehaviorMat(BehaviorMat):
         self.trialN = len(self.hfile['out/result'])
         self.eventlist, self.runningSpeed = self.initialize_node()
 
+        # get time_0 (normalize the behavior start time to t=0)
+        for node in self.eventlist:
+            # New tone signifies a new trial
+            if node.event == 'sound_on':
+                # get the time of cue onset in trial 1, normalize all following trials
+                if node.trial_index() == 1:
+                    self.time_0 = node.etime
+                    break
+
+        # get the timestamp for aligning with fluorescent data
+        if isinstance(hfile, str):
+            with h5py.File(hfile, 'r') as hf:
+                frame_time = np.array(hf['out/frame_time']).ravel()
+        else:
+            frame_time = np.array(hfile['out/frame_time']).ravel()
+        self.time_aligner = lambda t: frame_time
+
     def initialize_node(self):
         code_map = self.code_map
         eventlist = EventNode(None, None, None, None)
@@ -186,6 +203,7 @@ class GoNogoBehaviorMat(BehaviorMat):
 
         # align running speed to trials
         self.runningSpeed[:, 0] = self.runningSpeed[:, 0] - time_0
+
         result_df['running_speed'] = [[] for _ in range(self.trialN)]  # convert to np.array later
 
         # remap reward to self.outcome
@@ -223,10 +241,6 @@ class GoNogoBehaviorMat(BehaviorMat):
         """
         if file_type == 'csv':
             self.to_df().to_csv(outfile + '.csv')
-
-    def time_aligner(self):
-        # TODO: Implement
-        pass
 
     ### plot methods for behavior data
     # should add outputs later, for summary plots

@@ -282,8 +282,8 @@ class GoNoGo_Expr(NBExperiment):
         pathlist = folder.split(os.sep)[:-1] + ['plots']
         self.plot_path = oj(os.sep, *pathlist)
         print(f'Changing plot_path as {self.plot_path}')
-        if not os.path.exists(self.plot_path):
-            os.makedirs(self.plot_path)
+        #if not os.path.exists(self.plot_path):
+        #    os.makedirs(self.plot_path)
         for kw in kwargs:
             if hasattr(self, kw):
                 setattr(self, kw, kwargs[kw])
@@ -373,6 +373,7 @@ if __name__ == "__main__":
     bmat, gn_series = gse.load_animal_session(animal, session)
     bdf, dff_df = bmat.todf(), gn_series.calculate_dff()
 
+    gn_series.realign_time(bmat)
     # cue 2: first go cue, cue 7: nogo
     event = 'onset'
     neurons = [f'neuron{i}' for i in range(10, 20)]
