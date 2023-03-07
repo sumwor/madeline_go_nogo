@@ -4,6 +4,7 @@ from utils_signal import *
 import pandas as pd
 from tqdm import tqdm
 from pyPlotHW import StartPlots, StartSubplots
+import matplotlib.pyplot as plt
 
 # class to preprocess calcium 2-photon data
 
@@ -90,23 +91,38 @@ class Suite2pSeries:
 
     def plot_cell_location_dFF(self, neuron_range):
         import random
-        Fcells = self.neural_df.values.T
+
         cellstat = []
-        for cell in range(0, Fcells.shape[0]):
+        for cell in range(0, self.Fraw.shape[0]):
             if self.cells[cell, 0] > 0:
                 cellstat.append(self.stat[cell])
+
+        fluoCellPlot = StartPlots()
+        im = np.zeros((256, 256))
+
         for cell in neuron_range:
-            im = np.zeros((256, 256))
+
             xs = cellstat[cell]['xpix']
             ys = cellstat[cell]['ypix']
             im[ys, xs] = random.random()
 
-            fluoPlot = StartSubplots(1,2)
 
-            fluoPlot.ax[0,0].imshow(im, cmap='CMRmap')
+        fluoCellPlot.ax.imshow(im, cmap='CMRmap')
+        plt.show()
 
-            fluoPlot.ax[0,1].plot(self.neural_df[cell, 15000:20000], label="Neuron " + str(cell))
-            plt.legend()
+        return fluoCellPlot
+
+    def plot_cell_dFF(self, neuron_range):
+
+        fluoTracePlot = StartPlots()
+        for cell in neuron_range:
+            fluoTracePlot.ax.plot(self.neural_df.iloc[15000:20000, cell] + cell, label="Neuron " + str(cell))
+        plt.show()
+
+        return fluoTracePlot
+
+
+
 
 
 
@@ -132,19 +148,23 @@ def robust_filter(ys, method=12, window=200, optimize_window=2, buffer=False):
     return f0
 
 if __name__ == "__main__":
-    input_folder = r"Z:\Madeline\processed_data\JUV015\220409\suite2p"
+    #input_folder = r"Z:\Madeline\processed_data\JUV015\220409\suite2p"
+    input_folder = r"X:\Madeline\processed_data\JUV015\220409\suite2p"
     gn_series = Suite2pSeries(input_folder)
     animal, session = 'JUV011', '211215'
     # dff_df = gn_series.calculate_dff(melt=False)
 
     # get behavior
     from behavioral_pipeline import BehaviorMat, GoNogoBehaviorMat
-    beh_folder = "C:\\Users\\hongl\\Documents\\GitHub\\madeline_go_nogo\\data"
+    #beh_folder = "C:\\Users\\hongl\\Documents\\GitHub\\madeline_go_nogo\\data"
+    beh_folder = "C:\\Users\\xiachong\\Documents\\GitHub\\madeline_go_nogo\\data"
     beh_file = "JUV015_220409_behaviorLOG.mat"
     trialbytrial = GoNogoBehaviorMat(animal, session, oj(beh_folder, beh_file))
 
     # align behavior with fluorescent data
     gn_series.realign_time(trialbytrial)
 
-    gn_series.plot_cell_location_dFF(gn_series.neural_df.shape[1])
+    # save file
+    gn_series.neural_df.to_csv(r"C:\Users\xiachong\Documents\GitHub\JUV015_220409_dff_df_file.csv")
+    gn_series.plot_cell_location_dFF(np.arange(gn_series.neural_df.shape[1]-1))
     x= 1

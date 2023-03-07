@@ -58,10 +58,19 @@ class StartSubplots(StartPlots):
         #plt.tight_layout()
 
         # set plot top/right boundaries to invisible
-        for xx in range(xdim):
+        if xdim==1 and ydim > 1:
             for yy in range(ydim):
-                self.ax[xx,yy].spines['top'].set_visible(False)
-                self.ax[xx,yy].spines['right'].set_visible(False)
+                self.ax[yy].spines['top'].set_visible(False)
+                self.ax[yy].spines['right'].set_visible(False)
+        elif xdim > 1 and ydim == 1:
+            for xx in range(xdim):
+                self.ax[xx].spines['top'].set_visible(False)
+                self.ax[xx].spines['right'].set_visible(False)
+        else:
+            for xx in range(xdim):
+                for yy in range(ydim):
+                    self.ax[xx,yy].spines['top'].set_visible(False)
+                    self.ax[xx,yy].spines['right'].set_visible(False)
 
 
 # test

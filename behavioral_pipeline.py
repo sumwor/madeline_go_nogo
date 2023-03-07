@@ -204,7 +204,8 @@ class GoNogoBehaviorMat(BehaviorMat):
         # align running speed to trials
         self.runningSpeed[:, 0] = self.runningSpeed[:, 0] - time_0
 
-        result_df['running_speed'] = [[] for _ in range(self.trialN)]  # convert to np.array later
+        result_df['running_speed'] = [[] for _ in range(self.trialN)]
+        result_df['running_time'] = [[] for _ in range(self.trialN)]
 
         # remap reward to self.outcome
         # -4: probeSti, no lick;
@@ -218,10 +219,12 @@ class GoNogoBehaviorMat(BehaviorMat):
             t_start = result_df.onset[tt]
             if tt<self.trialN-1:
                 t_end = result_df.onset[tt+1]
-                result_df.at[tt, 'running_speed'] = [self.runningSpeed[np.logical_and(self.runningSpeed[:,0]>=t_start-3, self.runningSpeed[:,0]<t_end),:]]
+                result_df.at[tt, 'running_speed'] = self.runningSpeed[np.logical_and(self.runningSpeed[:,0]>=t_start-3, self.runningSpeed[:,0]<t_end),1].tolist()
+                result_df.at[tt, 'running_time'] = self.runningSpeed[
+                    np.logical_and(self.runningSpeed[:, 0] >= t_start - 3, self.runningSpeed[:, 0] < t_end), 0].tolist()
             elif tt == self.trialN-1:
-                result_df.at[tt - 1, 'running_speed'] = [self.runningSpeed[self.runningSpeed[:, 0] >= t_start-3, :]]
-
+                result_df.at[tt, 'running_speed'] = self.runningSpeed[self.runningSpeed[:, 0] >= t_start-3, 1].tolist()
+                result_df.at[tt, 'running_time'] = self.runningSpeed[self.runningSpeed[:, 0] >= t_start - 3, 0].tolist()
             # remap reward to outcome
             if result_df.sound_num[tt] in [9, 10, 11, 12, 13, 14, 15, 16]:
                 result_df.at[tt, 'choice'] = -4 if result_df.at[tt, 'licks_out']==0 else -3
@@ -240,7 +243,7 @@ class GoNogoBehaviorMat(BehaviorMat):
         saves the output of to_df() as a file of the specified type
         """
         if file_type == 'csv':
-            self.to_df().to_csv(outfile + '.csv')
+            self.DF.to_csv(outfile + '.csv')
 
     ### plot methods for behavior data
     # should add outputs later, for summary plots
@@ -396,8 +399,7 @@ class GoNogoBehaviorMat(BehaviorMat):
                                              binSize * sum(np.logical_and(np.array(self.DF.choice == -1),
                                                                           np.array(self.DF.sound_num) == (ssFA + 5))))
             for ssProbe in range(8):
-                lickRateProbe[ee, ssProbe] = sum(
-                    np.logical_and(lickTimesProbe[lickSoundProbe == (ssProbe + 9)] <= edges[ee] + binSize / 2,
+                lickRateProbe[ee, ssProbe] = sum(np.logical_and(lickTimesProbe[lickSoundProbe == (ssProbe + 9)] <= edges[ee] + binSize / 2,
                                    lickTimesProbe[lickSoundProbe == (ssProbe + 9)] > edges[ee] - binSize / 2)) / (
                                                binSize * sum(np.logical_and(np.array(self.DF.choice == -3),
                                                                             np.array(self.DF.sound_num) == (ssProbe + 9))))
@@ -708,12 +710,13 @@ class GoNogoBehaviorMat(BehaviorMat):
 if __name__ == "__main__":
     animal = 'JUV011'
     session = '211215'
-    input_folder = "C:\\Users\\hongl\\Documents\\GitHub\\madeline_go_nogo\\data"
-    #input_folder = "C:\\Users\\xiachong\\Documents\\GitHub\\madeline_go_nogo\\data"
+    #input_folder = "C:\\Users\\hongl\\Documents\\GitHub\\madeline_go_nogo\\data"
+    input_folder = "C:\\Users\\xiachong\\Documents\\GitHub\\madeline_go_nogo\\data"
     input_file = "JUV015_220409_behaviorLOG.mat"
     x = GoNogoBehaviorMat(animal, session, os.path.join(input_folder, input_file))
-    output_file = f"{animal}_{session}_behavior_output"
-    x.output_df(os.path.join(input_folder, output_file))
+    x.to_df()
+    output_file = r"C:\Users\xiachong\Documents\GitHub\madeline_go_nogo\data\JUV015_220409_behavior_output"
+    x.output_df(output_file)
 
 
     # test code for plot
