@@ -202,10 +202,6 @@ class fluoAnalysis:
         rewardList = self.beh['reward']
 
         # parallel computing
-
-        # define the function for parallel computing
-
-
         n_jobs = -1
 
         # Parallelize the loop over `trial`
@@ -269,5 +265,6 @@ if __name__ == "__main__":
 
     X, y, regr_time = analysis.linear_model()
 
+    analysis.linear_regr(X[1:-2], y[1:-2], regr_time)
 
     x = 1
