@@ -55,7 +55,7 @@ class fluoAnalysis:
                 self.dFF_aligned[:,tt,cc] = np.interp(interpT, tempT, tempdFF)
 
     def plot_dFF(self, savefigpath):
-        # PSTH plot for differnet trial types
+        # PSTH plot for different trial types
         # cue
         nCells = self.fluo.shape[1]
         for cc in tqdm(range(nCells-1)):
