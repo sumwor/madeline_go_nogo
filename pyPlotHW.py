@@ -3,6 +3,7 @@
 # output: ax, fig handles
 import matplotlib.pyplot as plt
 import os
+import matplotlib
 
 class StartPlots:
     # set font
@@ -17,7 +18,7 @@ class StartPlots:
 
     # set colormap
     plt.rcParams['image.cmap'] = 'jet'
-
+    matplotlib.use('Qt5Agg')
 
     def __init__(self):
 
