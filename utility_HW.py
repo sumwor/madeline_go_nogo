@@ -10,9 +10,10 @@ def bootstrap(data, dim, n_sample):
         # Bootstrap the matrix along the chosen dimension
         bootstrapped_matrix = np.take(data, bootstrap_indices, axis=dim)
 
+        meanBoot = np.nanmean(bootstrapped_matrix,2)
         bootAve = np.nanmean(bootstrapped_matrix, axis=(1, 2))
-        bootHigh = np.nanpercentile(bootstrapped_matrix, 97.5, axis=(1, 2))
-        bootLow = np.nanpercentile(bootstrapped_matrix, 2.5, axis=(1, 2))
+        bootHigh = np.nanpercentile(meanBoot, 97.5, axis=1)
+        bootLow = np.nanpercentile(meanBoot, 2.5, axis=1)
 
     else:  # return nans
         bootAve = np.full((data.shape[0]), np.nan)
