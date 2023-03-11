@@ -5,6 +5,7 @@ import pandas as pd
 import h5py
 import os
 from pyPlotHW import StartPlots, StartSubplots
+from utility_HW import bootstrap
 
 import matplotlib.pyplot as plt
 from scipy.optimize import minimize
@@ -558,37 +559,39 @@ class GoNogoBehaviorMat(BehaviorMat):
             run_aligned = np.full((len(interpT), self.trialN), np.nan)
             for tt in range(self.trialN-1):
                 speed = np.array(self.DF.running_speed[tt])
+                speedT = np.array(self.DF.running_time[tt])
                 if speed.size != 0:
-                    t = speed[0,:,0] - self.DF.onset[tt]
-                    y = speed[0,:,1]
+                    t = speedT - self.DF.onset[tt]
+                    y = speed
                     y_interp = np.interp(interpT, t, y)
                     run_aligned[:,tt] = y_interp
 
             # bootstrap
-            BootH = self.bootstrap(run_aligned[:, self.DF.choice == 2], dim=1, n_sample=numBoot)
-            BootFA = self.bootstrap(run_aligned[:, self.DF.choice == -1], dim=1, n_sample=numBoot)
-            BootMiss = self.bootstrap(run_aligned[:, self.DF.choice == -2], dim=1, n_sample=numBoot)
-            BootCorRej = self.bootstrap(run_aligned[:, self.DF.choice == 0], dim=1, n_sample=numBoot)
-            BootProbeLick = self.bootstrap(run_aligned[:, self.DF.choice == -3], dim=1, n_sample=numBoot)
-            BootProbeNoLick = self.bootstrap(run_aligned[:, self.DF.choice == -4], dim=1, n_sample=numBoot)
+            BootH = bootstrap(run_aligned[:, self.DF.choice == 2], dim=1, n_sample=numBoot)
+            BootFA = bootstrap(run_aligned[:, self.DF.choice == -1], dim=1, n_sample=numBoot)
+            BootMiss = bootstrap(run_aligned[:, self.DF.choice == -2], dim=1, n_sample=numBoot)
+            BootCorRej = bootstrap(run_aligned[:, self.DF.choice == 0], dim=1, n_sample=numBoot)
+            BootProbeLick = bootstrap(run_aligned[:, self.DF.choice == -3], dim=1, n_sample=numBoot)
+            BootProbeNoLick = bootstrap(run_aligned[:, self.DF.choice == -4], dim=1, n_sample=numBoot)
 
 
         elif aligned_to == 'outcome':
             run_aligned = np.full((len(interpT), self.trialN), np.nan)
             for tt in range(self.trialN-1):
                 speed = np.array(self.DF.running_speed[tt])
+                speedT = np.array(self.DF.running_time[tt])
                 if speed.size != 0:
-                    t = speed[0,:,0] - self.DF.outcome[tt]
-                    y = speed[0,:,1]
+                    t = speedT - self.DF.outcome[tt]
+                    y = speed
                     y_interp = np.interp(interpT, t, y)
                     run_aligned[:,tt] = y_interp
             # bootstrap
-            BootH = self.bootstrap(run_aligned[:, self.DF.choice == 2], dim=1, n_sample=numBoot)
-            BootFA = self.bootstrap(run_aligned[:, self.DF.choice == -1], dim=1, n_sample=numBoot)
-            BootMiss = self.bootstrap(run_aligned[:, self.DF.choice == -2], dim=1, n_sample=numBoot)
-            BootCorRej = self.bootstrap(run_aligned[:, self.DF.choice == 0], dim=1, n_sample=numBoot)
-            BootProbeLick = self.bootstrap(run_aligned[:, self.DF.choice == -3], dim=1, n_sample=numBoot)
-            BootProbeNoLick = self.bootstrap(run_aligned[:, self.DF.choice == -4], dim=1, n_sample=numBoot)
+            BootH = bootstrap(run_aligned[:, self.DF.choice == 2], dim=1, n_sample=numBoot)
+            BootFA = bootstrap(run_aligned[:, self.DF.choice == -1], dim=1, n_sample=numBoot)
+            BootMiss = bootstrap(run_aligned[:, self.DF.choice == -2], dim=1, n_sample=numBoot)
+            BootCorRej = bootstrap(run_aligned[:, self.DF.choice == 0], dim=1, n_sample=numBoot)
+            BootProbeLick = bootstrap(run_aligned[:, self.DF.choice == -3], dim=1, n_sample=numBoot)
+            BootProbeNoLick = bootstrap(run_aligned[:, self.DF.choice == -4], dim=1, n_sample=numBoot)
 
 
         elif aligned_to == 'licks':
@@ -599,21 +602,22 @@ class GoNogoBehaviorMat(BehaviorMat):
                 temp_aligned = np.full((len(interpT), numLicks), np.nan)
                 for ll in range(numLicks):
                     speed = np.array(self.DF.running_speed[tt])
+                    speedT = np.array(self.DF.running_time[tt])
                     if speed.size != 0:
-                        t = speed[0,:,0] - self.DF.licks[tt][ll]
-                        y = speed[0,:,1]
+                        t = speedT - self.DF.licks[tt][ll]
+                        y = speed
                         y_interp = np.interp(interpT, t, y)
                         temp_aligned[:,ll] = y_interp
 
                 run_aligned.append(temp_aligned)
 
             # bootstrap
-            BootH = self.bootstrap(self.concat_data(run_aligned, 2), dim=1, n_sample=numBoot)
-            BootFA = self.bootstrap(self.concat_data(run_aligned, -1), dim=1, n_sample=numBoot)
-            BootMiss = self.bootstrap(self.concat_data(run_aligned, -2), dim=1, n_sample=numBoot)
-            BootCorRej = self.bootstrap(self.concat_data(run_aligned, 0), dim=1, n_sample=numBoot)
-            BootProbeLick = self.bootstrap(self.concat_data(run_aligned, -3), dim=1, n_sample=numBoot)
-            BootProbeNoLick = self.bootstrap(self.concat_data(run_aligned, -4), dim=1, n_sample=numBoot)
+            BootH = bootstrap(self.concat_data(run_aligned, 2), dim=1, n_sample=numBoot)
+            BootFA = bootstrap(self.concat_data(run_aligned, -1), dim=1, n_sample=numBoot)
+            BootMiss = bootstrap(self.concat_data(run_aligned, -2), dim=1, n_sample=numBoot)
+            BootCorRej = bootstrap(self.concat_data(run_aligned, 0), dim=1, n_sample=numBoot)
+            BootProbeLick = bootstrap(self.concat_data(run_aligned, -3), dim=1, n_sample=numBoot)
+            BootProbeNoLick = bootstrap(self.concat_data(run_aligned, -4), dim=1, n_sample=numBoot)
 
 
         runPlot = StartSubplots(2,3,ifSharex=True, ifSharey=True)
@@ -679,43 +683,17 @@ class GoNogoBehaviorMat(BehaviorMat):
 
         return output
 
-    def bootstrap(self, data, dim, n_sample):
-
-        # Resample the rows of the matrix with replacement
-        if data.shape[dim]: # if input data is not empty
-            bootstrap_indices = np.random.choice(data.shape[dim], size=(n_sample, data.shape[dim]), replace=True)
-
-            # Bootstrap the matrix along the chosen dimension
-            bootstrapped_matrix = np.take(data, bootstrap_indices, axis=dim)
-
-            bootAve = np.nanmean(bootstrapped_matrix,axis = (1,2))
-            bootHigh = np.nanpercentile(bootstrapped_matrix, 97.5, axis = (1,2))
-            bootLow = np.nanpercentile(bootstrapped_matrix, 2.5, axis = (1,2))
-
-        else: # return nans
-            bootAve = np.full((data.shape[0]), np.nan)
-            bootLow = np.full((data.shape[0]), np.nan)
-            bootHigh = np.full((data.shape[0]), np.nan)
-            #bootstrapped_matrix = np.array([np.nan])
-
-        #bootstrapped_2d = bootstrapped_matrix.reshape(80,-1)
-        # need to find a way to output raw bootstrap results
-        tempData = { 'bootAve': bootAve, 'bootHigh': bootHigh, 'bootLow': bootLow}
-        index = np.arange(len(bootAve))
-        bootRes = pd.DataFrame(tempData,index)
-
-        return bootRes
-
 
 if __name__ == "__main__":
     animal = 'JUV011'
     session = '211215'
-    #input_folder = "C:\\Users\\hongl\\Documents\\GitHub\\madeline_go_nogo\\data"
-    input_folder = "C:\\Users\\xiachong\\Documents\\GitHub\\madeline_go_nogo\\data"
+    input_folder = "C:\\Users\\hongl\\Documents\\GitHub\\madeline_go_nogo\\data"
+    #input_folder = "C:\\Users\\xiachong\\Documents\\GitHub\\madeline_go_nogo\\data"
     input_file = "JUV015_220409_behaviorLOG.mat"
     x = GoNogoBehaviorMat(animal, session, os.path.join(input_folder, input_file))
     x.to_df()
-    output_file = r"C:\Users\xiachong\Documents\GitHub\madeline_go_nogo\data\JUV015_220409_behavior_output"
+    #output_file = r"C:\Users\xiachong\Documents\GitHub\madeline_go_nogo\data\JUV015_220409_behavior_output"
+    output_file = r"C:\\Users\\hongl\\Documents\\GitHub\\madeline_go_nogo\\data\JUV015_220409_behavior_output"
     x.output_df(output_file)
 
 
@@ -723,6 +701,6 @@ if __name__ == "__main__":
 
     #x.psycho_curve()
     #x.response_time()
-    x.lick_rate()
+    #x.lick_rate()
     #x.ITI_distribution()
-    #x.running_aligned('outcome')
+    x.running_aligned('onset')
