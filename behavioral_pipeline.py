@@ -9,7 +9,11 @@ from utility_HW import bootstrap
 
 import matplotlib.pyplot as plt
 from scipy.optimize import minimize
+from scipy.stats import norm
+import statsmodels.api as sm
+
 import pandas as pd
+import pickle
 
 from behavior_base import PSENode, EventNode
 
@@ -104,6 +108,9 @@ class GoNogoBehaviorMat(BehaviorMat):
         else:
             frame_time = np.array(hfile['out/frame_time']).ravel()
         self.time_aligner = lambda t: frame_time
+
+        # a dictionary to save all needed behavor metrics
+        self.saveData = dict()
 
     def initialize_node(self):
         code_map = self.code_map
@@ -237,6 +244,8 @@ class GoNogoBehaviorMat(BehaviorMat):
         # save the data into self
         self.DF = result_df
 
+        self.saveData['behDF'] = result_df
+
         return result_df
 
     def output_df(self, outfile, file_type='csv'):
@@ -249,7 +258,7 @@ class GoNogoBehaviorMat(BehaviorMat):
     ### plot methods for behavior data
     # should add outputs later, for summary plots
 
-    def beh_session(self):
+    def beh_session(self, save_path):
         # plot the outcome according to trials
         trialNum = np.arange(self.trialN)
 
@@ -290,12 +299,28 @@ class GoNogoBehaviorMat(BehaviorMat):
         beh_plots.fig.set_figwidth(40)
         plt.show()
 
-        return beh_plots
+        # save the plot
+        beh_plots.save_plot('Behavior summary.svg', 'svg', save_path)
+        beh_plots.save_plot('Behavior summary.tif', 'tif', save_path)
         # trialbytrial.beh_session()
 
-    def psycho_curve(self):
+    def d_prime(self):
+        # calculate d prime
+        nTrialGo = np.sum(np.logical_or(self.DF['choice']==2, self.DF['choice']==-2))
+        nTrialNoGo = np.sum(np.logical_or(self.DF['choice'] == -1, self.DF['choice'] == 0))
+        Hit_rate = np.sum(self.DF['choice'] == 2) / nTrialGo
+        FA_rate = np.sum(self.DF['choice'] == -1) / nTrialNoGo
+
+        d_prime = norm.ppf(Hit_rate) - norm.ppf(FA_rate)
+
+        self.saveData['d-prime'] = d_prime
+
+    def psycho_curve(self, save_path):
         # get variables
         # hfile['out']['sound_freq'][0:-1]
+        # use logistic regression
+        # L(P(go)/(1-P(go)) = beta0 + beta_Go*S_Go + beta_NoGo * S_NoGo
+        # reference: Breton-Provencher, 2022
 
         numSound = 16
 
@@ -331,34 +356,51 @@ class GoNogoBehaviorMat(BehaviorMat):
         sortednumSound = sound[sortedInd]
 
 
-        # fit a softmax function
-        result = minimize(self.neg_log_likelihood, [0.5], args=((sortedFreqTotal[stiSortedInd]-midFreq), (sortednumGo[stiSortedInd] / sortednumSound[stiSortedInd])))
+        # fit logistic regression
+        y = sortednumGo[stiSortedInd] / sortednumSound[stiSortedInd]
+        x = np.array((sortedFreqTotal[stiSortedInd],sortedFreqTotal[stiSortedInd]))
+        x[0, 4:] = 0 # S_Go
+        x[1, 0:4] = 0 # S_NoGo
+        x = x.transpose()
+        x = sm.add_constant(x)
 
-        #psyCurve.ax.plot((sortedFreqTotal[stiSortedInd]-midFreq), (sortednumGo[stiSortedInd] / sortednumSound[stiSortedInd]))
-        #plt.show()
+        if np.count_nonzero(~np.isnan(y)) > 1:
+            model = sm.Logit(y, x).fit()
 
-        # Print the estimated parameters
-        print("Estimated parameters: ", result.x)
-        beta = result.x
+            # save the data
+            self.saveData['L-fit'] = model.params
 
-        x_fit = np.linspace(6, 16, 100)
-        y_fit = self.softmax(beta, x_fit-midFreq)
+            # generating x for model prediction
+            x_pred = np.array((np.linspace(6,16, 50), np.linspace(6,16, 50)))
+            x_pred[0,x_pred[0,:]>midFreq] = 0
+            x_pred[1,x_pred[1,:]<midFreq] = 0
+            x_pred = x_pred.transpose()
+            x_pred = sm.add_constant(x_pred)
+            y_pred = model.predict(x_pred)
 
-        psyCurve = StartPlots()
-        psyCurve.ax.scatter(sortedFreqTotal[stiSortedInd], sortednumGo[stiSortedInd] / sortednumSound[stiSortedInd])
-        psyCurve.ax.scatter(sortedFreqTotal[probeSortedInd], sortednumGo[probeSortedInd] / sortednumSound[probeSortedInd])
-        psyCurve.ax.plot(x_fit, y_fit)
+            #xNoGo_fit = np.linspace(6,16, 50)
+            #yNoGo_fit = self.softmax(result_NoGo.x, xNoGo_fit-midFreq)
 
-        psyCurve.ax.plot([midFreq, midFreq], [0, 1], linestyle='--')
+            psyCurve = StartPlots()
+            psyCurve.ax.scatter(sortedFreqTotal[stiSortedInd], sortednumGo[stiSortedInd] / sortednumSound[stiSortedInd])
+            psyCurve.ax.scatter(sortedFreqTotal[probeSortedInd], sortednumGo[probeSortedInd] / sortednumSound[probeSortedInd])
+            psyCurve.ax.plot(np.linspace(6,16, 50), y_pred)
+            #psyCurve.ax.plot(xNoGo_fit, yNoGo_fit)
 
-        # ax.legend()
-        psyCurve.ax.set_xlabel('Sound (kHz)')
-        psyCurve.ax.set_ylabel('Go rate')
-        plt.show()
+            psyCurve.ax.plot([midFreq, midFreq], [0, 1], linestyle='--')
 
-        return psyCurve
+            # ax.legend()
+            psyCurve.ax.set_xlabel('Sound (kHz)')
+            psyCurve.ax.set_ylabel('Go rate')
+            plt.show()
 
-    def lick_rate(self):
+            psyCurve.save_plot('psychometric.svg', 'svg', save_path)
+            psyCurve.save_plot('psychometric summary.tif', 'tif', save_path)
+        else:
+            self.saveData['L-fit'] = np.nan
+
+
+    def lick_rate(self, save_path):
         lickTimesH = np.array([])  # lick rate for Hit trials
         lickTimesFA =np.array([])   # lick rage for False alarm trials
         lickTimesProbe = np.array([])
@@ -404,6 +446,17 @@ class GoNogoBehaviorMat(BehaviorMat):
                                    lickTimesProbe[lickSoundProbe == (ssProbe + 9)] > edges[ee] - binSize / 2)) / (
                                                binSize * sum(np.logical_and(np.array(self.DF.choice == -3),
                                                                             np.array(self.DF.sound_num) == (ssProbe + 9))))
+
+        # save data
+        self.saveData['lickRate'] = pd.DataFrame({'edges': edges})
+        for ss in np.unique(self.DF['sound_num']):
+            if ss < 5: # hit
+                self.saveData['lickRate'][str(ss)] = lickRateH[:,ss-1]
+            elif ss >= 5 and ss < 9:
+                self.saveData['lickRate'][str(ss)] = lickRateFA[:,ss-5]
+            else:
+                self.saveData['lickRate'][str(ss)] = lickRateProbe[:,ss-9]
+
         # plot the response time distribution in hit/false alarm trials
         lickRate = StartPlots()
 
@@ -419,7 +472,8 @@ class GoNogoBehaviorMat(BehaviorMat):
 
         plt.show()
 
-        return lickRate
+        lickRate.save_plot('lick rate.svg', 'svg', save_path)
+        lickRate.save_plot('lick rate.tif', 'tif', save_path)
         # separate the lick rate into different frequencies
         # fig, axs = plt.subplots(2, 4, figsize=(8, 8), sharey=True)
         #
@@ -436,7 +490,7 @@ class GoNogoBehaviorMat(BehaviorMat):
         # plt.subplots_adjust(top=0.85)
         # plt.show()
 
-    def response_time(self):
+    def response_time(self, save_path):
         """
         aligned_to: time point to be aligned. cue/outcome/licks
         """
@@ -447,10 +501,12 @@ class GoNogoBehaviorMat(BehaviorMat):
 
         # plot the response time distribution in hit/false alarm trials
         rtPlot = StartPlots()
-        _, bins, _ = rtPlot.ax.hist(rt[np.array(self.DF.choice) == 2], bins=50, range=[0, .5])
-        _ = rtPlot.ax.hist(rt[np.array(self.DF.choice) == -1], bins=bins, density=True)
+        rtHit, bins, _ = rtPlot.ax.hist(rt[np.array(self.DF.choice) == 2], bins=100, range=[0, 0.5], density=True)
+        rtFA, _, _ = rtPlot.ax.hist(rt[np.array(self.DF.choice) == -1], bins=bins, density=True)
         #_ = rtPlot.ax.hist(rt[np.array(self.DF.choice) == -3], bins=bins, density=True)
 
+        # save the data
+        self.saveData['rt'] = pd.DataFrame({'rtHit':rtHit, 'rtFA': rtFA, 'bin': bins[1:]})
         rtPlot.ax.set_xlabel('Response time (s)')
         rtPlot.ax.set_ylabel('Frequency (%)')
         rtPlot.ax.set_title('Response time (s)')
@@ -459,7 +515,8 @@ class GoNogoBehaviorMat(BehaviorMat):
 
         plt.show()
 
-        return rtPlot
+        rtPlot.save_plot('Response time.svg', 'svg', save_path)
+        rtPlot.save_plot('Response time.tif', 'tif', save_path)
         # separate the response time into different frequencies
         # fig, axs = plt.subplots(2,4,figsize=(8, 8), sharey=True)
         #
@@ -479,9 +536,10 @@ class GoNogoBehaviorMat(BehaviorMat):
         # plt.subplots_adjust(top=0.85)
         # plt.show()
 
-    def ITI_distribution(self):
+    def ITI_distribution(self, save_path):
         ITIH = []  # lick rate for Hit trials
         ITIFA = []  # lick rage for False alarm trials
+        ITIProbe = []
 
         ITISoundH = np.array(self.DF.sound_num[np.logical_and(self.DF.reward==2, self.DF.trial!=self.trialN)])
         ITISoundFA = np.array(self.DF.sound_num[np.logical_and(self.DF.reward==-1,self.DF.trial!=self.trialN)])
@@ -530,7 +588,8 @@ class GoNogoBehaviorMat(BehaviorMat):
 
         plt.show()
 
-        return ITIPlot
+        ITIPlot.save_plot('ITI.svg', 'svg', save_path)
+        ITIPlot.save_plot('ITI.tif', 'tif', save_path)
         # # separate the lick rate into different frequencies
         # fig, axs = plt.subplots(2, 4, figsize=(8, 8), sharey=True)
         #
@@ -547,7 +606,7 @@ class GoNogoBehaviorMat(BehaviorMat):
         # plt.subplots_adjust(top=0.85)
         # plt.show()
 
-    def running_aligned(self, aligned_to):
+    def running_aligned(self, aligned_to, save_path):
         """
         aligned_to: reference time point. onset/outcome/lick
         """
@@ -567,12 +626,12 @@ class GoNogoBehaviorMat(BehaviorMat):
                     run_aligned[:,tt] = y_interp
 
             # bootstrap
-            BootH = bootstrap(run_aligned[:, self.DF.choice == 2], dim=1, n_sample=numBoot)
-            BootFA = bootstrap(run_aligned[:, self.DF.choice == -1], dim=1, n_sample=numBoot)
-            BootMiss = bootstrap(run_aligned[:, self.DF.choice == -2], dim=1, n_sample=numBoot)
-            BootCorRej = bootstrap(run_aligned[:, self.DF.choice == 0], dim=1, n_sample=numBoot)
-            BootProbeLick = bootstrap(run_aligned[:, self.DF.choice == -3], dim=1, n_sample=numBoot)
-            BootProbeNoLick = bootstrap(run_aligned[:, self.DF.choice == -4], dim=1, n_sample=numBoot)
+            BootH = bootstrap(run_aligned[:, self.DF.choice == 2], dim=1, dim0 = len(interpT),n_sample=numBoot)
+            BootFA = bootstrap(run_aligned[:, self.DF.choice == -1], dim=1, dim0 = len(interpT),n_sample=numBoot)
+            BootMiss = bootstrap(run_aligned[:, self.DF.choice == -2], dim=1, dim0 = len(interpT),n_sample=numBoot)
+            BootCorRej = bootstrap(run_aligned[:, self.DF.choice == 0], dim=1, dim0 = len(interpT),n_sample=numBoot)
+            BootProbeLick = bootstrap(run_aligned[:, self.DF.choice == -3], dim=1, dim0 = len(interpT),n_sample=numBoot)
+            BootProbeNoLick = bootstrap(run_aligned[:, self.DF.choice == -4], dim=1, dim0 = len(interpT),n_sample=numBoot)
 
 
         elif aligned_to == 'outcome':
@@ -586,12 +645,12 @@ class GoNogoBehaviorMat(BehaviorMat):
                     y_interp = np.interp(interpT, t, y)
                     run_aligned[:,tt] = y_interp
             # bootstrap
-            BootH = bootstrap(run_aligned[:, self.DF.choice == 2], dim=1, n_sample=numBoot)
-            BootFA = bootstrap(run_aligned[:, self.DF.choice == -1], dim=1, n_sample=numBoot)
-            BootMiss = bootstrap(run_aligned[:, self.DF.choice == -2], dim=1, n_sample=numBoot)
-            BootCorRej = bootstrap(run_aligned[:, self.DF.choice == 0], dim=1, n_sample=numBoot)
-            BootProbeLick = bootstrap(run_aligned[:, self.DF.choice == -3], dim=1, n_sample=numBoot)
-            BootProbeNoLick = bootstrap(run_aligned[:, self.DF.choice == -4], dim=1, n_sample=numBoot)
+            BootH = bootstrap(run_aligned[:, self.DF.choice == 2], dim=1, dim0 = len(interpT),n_sample=numBoot)
+            BootFA = bootstrap(run_aligned[:, self.DF.choice == -1], dim=1, dim0 = len(interpT),n_sample=numBoot)
+            BootMiss = bootstrap(run_aligned[:, self.DF.choice == -2], dim=1, dim0 = len(interpT),n_sample=numBoot)
+            BootCorRej = bootstrap(run_aligned[:, self.DF.choice == 0], dim=1, dim0 = len(interpT),n_sample=numBoot)
+            BootProbeLick = bootstrap(run_aligned[:, self.DF.choice == -3], dim=1, dim0 = len(interpT),n_sample=numBoot)
+            BootProbeNoLick = bootstrap(run_aligned[:, self.DF.choice == -4], dim=1, dim0 = len(interpT),n_sample=numBoot)
 
 
         elif aligned_to == 'licks':
@@ -612,12 +671,15 @@ class GoNogoBehaviorMat(BehaviorMat):
                 run_aligned.append(temp_aligned)
 
             # bootstrap
-            BootH = bootstrap(self.concat_data(run_aligned, 2), dim=1, n_sample=numBoot)
-            BootFA = bootstrap(self.concat_data(run_aligned, -1), dim=1, n_sample=numBoot)
-            BootMiss = bootstrap(self.concat_data(run_aligned, -2), dim=1, n_sample=numBoot)
-            BootCorRej = bootstrap(self.concat_data(run_aligned, 0), dim=1, n_sample=numBoot)
-            BootProbeLick = bootstrap(self.concat_data(run_aligned, -3), dim=1, n_sample=numBoot)
-            BootProbeNoLick = bootstrap(self.concat_data(run_aligned, -4), dim=1, n_sample=numBoot)
+            BootH = bootstrap(self.concat_data(run_aligned, 2), dim=1, dim0 = len(interpT), n_sample=numBoot)
+            BootFA = bootstrap(self.concat_data(run_aligned, -1), dim=1, dim0 = len(interpT), n_sample=numBoot)
+            BootMiss = bootstrap(self.concat_data(run_aligned, -2), dim=1, dim0 = len(interpT), n_sample=numBoot)
+            BootCorRej = bootstrap(self.concat_data(run_aligned, 0), dim=1, dim0 = len(interpT), n_sample=numBoot)
+            BootProbeLick = bootstrap(self.concat_data(run_aligned, -3), dim=1, dim0 = len(interpT), n_sample=numBoot)
+            BootProbeNoLick = bootstrap(self.concat_data(run_aligned, -4), dim=1, dim0 = len(interpT), n_sample=numBoot)
+
+        # save the data
+        self.saveData['run_' + aligned_to] = {'interpT': interpT, 'run_aligned': run_aligned}
 
 
         runPlot = StartSubplots(2,3,ifSharex=True, ifSharey=True)
@@ -653,10 +715,19 @@ class GoNogoBehaviorMat(BehaviorMat):
         runPlot.ax[1,2].set_title('Probe nolick')
         runPlot.ax[1,2].set_xlabel('Time (s)')
 
-        plt.show()
-
-        return runPlot
+        runPlot.save_plot('Running' + aligned_to + '.svg', 'svg', save_path)
+        runPlot.save_plot('Running' + aligned_to + '.svg', 'tif', save_path)
     ### analysis methods for behavior
+
+    def save_anlaysis(self, save_path):
+        # save the analysis result
+        # save the analysis result
+        # Open a file for writing
+        save_file = os.path.join(save_path, 'behAnalysis.pickle')
+        with open(save_path, 'wb') as f:
+            # Use pickle to dump the dictionary into the file
+            pickle.dump(self.saveData, f)
+
     def fit_softmax(self, x, y):
         # Fit the softmax function to the data using scipy.optimize.minimize
         result = minimize(self.neg_log_likelihood, [0.5], args=(x, y))
@@ -687,20 +758,20 @@ class GoNogoBehaviorMat(BehaviorMat):
 if __name__ == "__main__":
     animal = 'JUV011'
     session = '211215'
-    input_folder = "C:\\Users\\hongl\\Documents\\GitHub\\madeline_go_nogo\\data"
-    #input_folder = "C:\\Users\\xiachong\\Documents\\GitHub\\madeline_go_nogo\\data"
+    #input_folder = "C:\\Users\\hongl\\Documents\\GitHub\\madeline_go_nogo\\data"
+    input_folder = "C:\\Users\\xiachong\\Documents\\GitHub\\madeline_go_nogo\\data"
     input_file = "JUV015_220409_behaviorLOG.mat"
     x = GoNogoBehaviorMat(animal, session, os.path.join(input_folder, input_file))
     x.to_df()
-    #output_file = r"C:\Users\xiachong\Documents\GitHub\madeline_go_nogo\data\JUV015_220409_behavior_output"
-    output_file = r"C:\\Users\\hongl\\Documents\\GitHub\\madeline_go_nogo\\data\JUV015_220409_behavior_output"
+    output_file = r"C:\Users\xiachong\Documents\GitHub\madeline_go_nogo\data\JUV015_220409_behavior_output"
+    #output_file = r"C:\\Users\\hongl\\Documents\\GitHub\\madeline_go_nogo\\data\JUV015_220409_behavior_output"
     x.output_df(output_file)
-
+    #x.d_prime()
 
     # test code for plot
 
-    #x.psycho_curve()
+    # x.psycho_curve()
     #x.response_time()
-    #x.lick_rate()
+    # x.lick_rate()
     #x.ITI_distribution()
     x.running_aligned('onset')

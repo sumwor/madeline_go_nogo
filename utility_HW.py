@@ -2,9 +2,9 @@
 import numpy as np
 import pandas as pd
 
-def bootstrap(data, dim, n_sample):
+def bootstrap(data, dim, dim0, n_sample):
     # Resample the rows of the matrix with replacement
-    if data.shape[dim]:  # if input data is not empty
+    if len(data)>0:  # if input data is not empty
         bootstrap_indices = np.random.choice(data.shape[dim], size=(n_sample, data.shape[dim]), replace=True)
 
         # Bootstrap the matrix along the chosen dimension
@@ -16,9 +16,9 @@ def bootstrap(data, dim, n_sample):
         bootLow = np.nanpercentile(meanBoot, 2.5, axis=1)
 
     else:  # return nans
-        bootAve = np.full((data.shape[0]), np.nan)
-        bootLow = np.full((data.shape[0]), np.nan)
-        bootHigh = np.full((data.shape[0]), np.nan)
+        bootAve = np.full(dim0, np.nan)
+        bootLow = np.full(dim0, np.nan)
+        bootHigh = np.full(dim0, np.nan)
         # bootstrapped_matrix = np.array([np.nan])
 
     # bootstrapped_2d = bootstrapped_matrix.reshape(80,-1)
