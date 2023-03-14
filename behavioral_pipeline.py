@@ -164,6 +164,7 @@ class GoNogoBehaviorMat(BehaviorMat):
 
         for node in self.eventlist:
             # New tone signifies a new trial
+            # trial should start with 'sound_on'
             if node.event == 'sound_on':
                 # get the time of cue onset in trial 1, normalize all following trials
                 if node.trial_index() == 1:
@@ -176,17 +177,18 @@ class GoNogoBehaviorMat(BehaviorMat):
 
             elif node.event == 'in':
                 # add a list contain all licks in the trial
+                if node.trial_index() > 0:
+                    if not result_df.at[node.trial_index()-1, 'licks']:
+                        result_df.at[node.trial_index()-1, 'licks'] = [node.etime-time_0]
+                    else:
+                        result_df.at[node.trial_index()-1, 'licks'].append(node.etime-time_0)
 
-                if not result_df.at[node.trial_index()-1, 'licks']:
-                    result_df.at[node.trial_index()-1, 'licks'] = [node.etime-time_0]
-                else:
-                    result_df.at[node.trial_index()-1, 'licks'].append(node.etime-time_0)
-
-                if np.isnan(result_df.loc[node.trial_index()-1, 'first_lick_in']):
-                    result_df.loc[node.trial_index()-1, 'first_lick_in'] = node.etime-time_0
+                    if np.isnan(result_df.loc[node.trial_index()-1, 'first_lick_in']):
+                        result_df.loc[node.trial_index()-1, 'first_lick_in'] = node.etime-time_0
             elif node.event == 'out':
-                result_df.loc[node.trial_index()-1, 'last_lick_out'] = node.etime-time_0
-                result_df.loc[node.trial_index()-1, 'licks_out'] += 1
+                if node.trial_index() > 0:
+                    result_df.loc[node.trial_index()-1, 'last_lick_out'] = node.etime-time_0
+                    result_df.loc[node.trial_index()-1, 'licks_out'] += 1
             elif node.event == 'outcome':
                 result_df.loc[node.trial_index()-1, 'outcome'] = node.etime-time_0
                 outcome = self.code_map[node.ecode][1]
@@ -364,7 +366,13 @@ class GoNogoBehaviorMat(BehaviorMat):
         x = x.transpose()
         x = sm.add_constant(x)
 
-        if np.count_nonzero(~np.isnan(y)) > 1:
+        if np.count_nonzero(~np.isnan(y)) > 2:
+            # also check if there is perfect separation
+
+            # drop nan values
+            keepInd = np.logical_not(np.isnan(y))
+            y = y[keepInd]
+            x = x[keepInd,:]
             model = sm.Logit(y, x).fit()
 
             # save the data
@@ -716,15 +724,15 @@ class GoNogoBehaviorMat(BehaviorMat):
         runPlot.ax[1,2].set_xlabel('Time (s)')
 
         runPlot.save_plot('Running' + aligned_to + '.svg', 'svg', save_path)
-        runPlot.save_plot('Running' + aligned_to + '.svg', 'tif', save_path)
+        runPlot.save_plot('Running' + aligned_to + '.tif', 'tif', save_path)
     ### analysis methods for behavior
 
-    def save_anlaysis(self, save_path):
+    def save_analysis(self, save_path):
         # save the analysis result
         # save the analysis result
         # Open a file for writing
         save_file = os.path.join(save_path, 'behAnalysis.pickle')
-        with open(save_path, 'wb') as f:
+        with open(save_file, 'wb') as f:
             # Use pickle to dump the dictionary into the file
             pickle.dump(self.saveData, f)
 
