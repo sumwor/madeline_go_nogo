@@ -9,6 +9,10 @@ import glob
 from tqdm import tqdm
 import matplotlib.pyplot as plt
 
+import matplotlib
+matplotlib.use('Agg')
+
+
 root_dir = r'X:\HongliWang\Madeline'
 raw_beh = 'processed_behavior'
 raw_fluo = 'raw_imaging'
@@ -66,4 +70,9 @@ for f in tqdm(range(nFiles)):
 
     plt.close('all')
     x.save_analysis(output_path)
+
+
+# summary plot
+
+# create a dictionary to save summary data
 

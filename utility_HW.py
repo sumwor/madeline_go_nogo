@@ -2,6 +2,10 @@
 import numpy as np
 import pandas as pd
 
+import warnings
+warnings.filterwarnings("ignore")
+
+
 def bootstrap(data, dim, dim0, n_sample):
     # Resample the rows of the matrix with replacement
     if len(data)>0:  # if input data is not empty
