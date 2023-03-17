@@ -13,7 +13,7 @@ import matplotlib.pyplot as plt
 import matplotlib
 
 from scipy.optimize import minimize
-from scipy.stats import norm
+from scipy.stats import norm, ttest_ind
 import statsmodels.api as sm
 
 import pandas as pd
@@ -538,7 +538,7 @@ class GoNogoBehaviorMat(BehaviorMat):
 
             rt = np.zeros(self.trialN)
 
-            for tt in range(len(rt)):
+            for tt in range(self.trialN):
                 rt[tt] = self.DF.first_lick_in[tt] - self.DF.onset[tt]
 
             # plot the response time distribution in hit/false alarm trials
@@ -549,6 +549,8 @@ class GoNogoBehaviorMat(BehaviorMat):
 
             # save the data
             self.saveData['rt'] = pd.DataFrame({'rtHit':rtHit, 'rtFA': rtFA, 'bin': bins[1:]})
+            self.saveData['rtbyTrial'] = rt
+
             rtPlot.ax.set_xlabel('Response time (s)')
             rtPlot.ax.set_ylabel('Frequency (%)')
             rtPlot.ax.set_title('Response time (s)')
@@ -880,6 +882,61 @@ class GoNogoBehaviorSum:
         # read all analyzed data of individual sessions and save to a dictionary
 
         nFiles = self.beh_df.shape[0]
+        self.trainSti = np.zeros(nFiles) # number of stimulus used
+        self.animalList = np.unique(self.beh_df['subject'])
+        # should be 2 (1 go, 1 no go)
+
+        ### initialize the concateChoice to store the choice and stimulus for every animal
+        self.concateChoice = dict()
+        for aa in self.animalList:
+            self.concateChoice[aa] = dict()
+            self.concateChoice[aa]['sound'] = []
+            self.concateChoice[aa]['session'] = []
+            self.concateChoice[aa]['choice'] = []
+            self.concateChoice[aa]['numSound'] = []
+            self.concateChoice[aa]['respT'] = []
+            # concatenate files
+            animalInd =  [i for i, val in enumerate(self.beh_df['subject']) if val == aa]
+            tempInd = 0
+            numSti = 0  # the variable is used to determine when the new stimulus was first introduced
+            # if the animal experienced 8 stimulus in the previous session, then the value is 8 for all following session ,
+            # regardless on how many stimulus it experienced in following sessions
+
+            for aInd in animalInd:
+                save_file = os.path.join(self.beh_df.iloc[aInd]['saved_dir'], 'behAnalysis.pickle')
+                # load pickle file
+                with open(save_file, 'rb') as pf:
+                    # Load the data from the pickle file
+                    my_data = pickle.load(pf)
+                    pf.close()
+
+                self.concateChoice[aa]['sound'] = np.append(self.concateChoice[aa]['sound'],
+                                                            np.array(my_data['behDF']['sound_num'].values))
+                self.concateChoice[aa]['session'] = np.append(self.concateChoice[aa]['session'],
+                                                              np.ones(len(my_data['behDF']['sound_num']))*tempInd)
+                self.concateChoice[aa]['choice'] = np.append(self.concateChoice[aa]['choice'] ,
+                                                             np.array(my_data['behDF']['choice'].values))
+                self.concateChoice[aa]['respT'] = np.append(self.concateChoice[aa]['respT'] ,
+                                                             my_data['rtbyTrial'])
+                tempInd = tempInd + 1
+
+            # once we have the complete sequence of stimulus presented, determine when a new stiumulus is first introduced
+
+            # Use a set to get unique elements in any order
+            uniqueSound = [] # this list contains all sound stimulus, ordered by the time of their first appearance
+            self.concateChoice[aa]['numSound'] = []
+            numSound = 0
+            for val in self.concateChoice[aa]['sound']:
+                if val not in uniqueSound:
+                    # update number of sound experienced
+                    if numSound < 2:
+                        numSound = numSound + 1
+                    elif numSound < 8 and val <= 4: # sounds are added in pairs
+                        numSound = numSound + 2
+                    #elif val > 8 and np.all(np.array(uniqueSound) <= 8):  # + 8 once, since probe stimulus are added at once
+                    #    numSound = numSound + 8
+                    uniqueSound.append(val)
+                self.concateChoice[aa]['numSound'] = np.append(self.concateChoice[aa]['numSound'], numSound)
 
         # initialize variables
         for ff in tqdm(range(nFiles)):
@@ -888,16 +945,19 @@ class GoNogoBehaviorSum:
             with open(save_file, 'rb') as pf:
                 # Load the data from the pickle file
                 my_data = pickle.load(pf)
+                pf.close()
            # basic information: subject, session
             if ff == 0:
                 self.beh_dict['animal'] = [None] * nFiles
                 self.beh_dict['session'] = [None] * nFiles
 
-            self.beh_dict['animal'] = my_data['behDF'].iloc[0]['animal']
-            self.beh_dict['session'] = my_data['behDF'].iloc[0]['session']
+            self.beh_dict['animal'][ff] = my_data['behDF'].iloc[0]['animal']
+            self.beh_dict['session'][ff] = my_data['behDF'].iloc[0]['session']
+            self.trainSti[ff] = len(np.unique(my_data['behDF']['sound_num']))
+
            # initialize the summary dictionary if it is the first file
             for key in my_data.keys():
-                if key != 'behDF' and not 'run' in key:
+                if not key in ['behDF', 'rtbyTrial'] and not 'run' in key:
                     # ignore the run_aligned for now, until coming up with how to summarize it
 
                     if isinstance(my_data[key], np.ndarray):
@@ -905,15 +965,15 @@ class GoNogoBehaviorSum:
                         if ff == 0:
                             self.beh_dict[key] = np.zeros((len(my_data[key]), nFiles))
                         # set the value
-                        self.beh_dict[key][:,nFiles] = my_data[key]
+                        self.beh_dict[key][:,ff] = my_data[key]
 
                     elif isinstance(my_data[key], pd.DataFrame):
                             # respone time/lick rate
                         if ff == 0:
-                            dfShape = my_data[key].shape()
+                            dfShape = my_data[key].shape
                             self.beh_dict[key] = np.zeros((dfShape[0], dfShape[1], nFiles))
                         # set values
-                        self.beh_dict[key][:,:,nFiles] = my_data[key]
+                        self.beh_dict[key][:,:,ff] = my_data[key]
                     elif isinstance(my_data[key], dict):
                             # run aligns are dictionary
                         if 'interpT' in my_data[key].keys():
@@ -922,17 +982,468 @@ class GoNogoBehaviorSum:
                                 arrShape = my_data[key]['run_aligned'].shape
                                 self.beh_dict[key] = np.zeros((arrShape[0], arrShape[1], nFiles))
                             # set value
-                            self.beh_dict[key][:,:,nFiles] = my_data[key]['run_aligned']
+                            self.beh_dict[key][:,:,ff] = my_data[key]['run_aligned']
                     else:
                         if ff == 0:
                             # a single value
                             self.beh_dict[key] = np.zeros((nFiles))
                         # set value
-                        self.beh_dict[key][nFiles] = my_data[key]
+                        self.beh_dict[key][ff] = my_data[key]
 
 
 
-        x = 1
+    def plot_dP(self, save_path):
+        # plot d-prime progress by animals
+        # concatenate sessions from one animla, calculate running/block d-prime (50 trials)
+        # also separated by number of stimulus presented
+        # separate by age
+        # also separate by training protocol (number of stimulus used)
+
+        # go through every animal, align the behavior with number of sounds introduced
+
+        # start with two sound stimulus first
+        stiNumList = [1, 2, 4, 6, 8]
+        tStep = 50 # calculate the d-prime in block of 50 trials
+        runningdPrime = dict()
+
+        for ss in range(len(stiNumList) - 1):
+            runningdPrime[str(stiNumList[ss+1])] = dict()
+            for aa in self.animalList:
+
+                tempInd = np.logical_and(self.concateChoice[aa]['numSound'] > stiNumList[ss], self.concateChoice[aa]['numSound'] <= stiNumList[ss+1])
+                tempChoice = self.concateChoice[aa]['choice'][tempInd]
+
+                runningdPrime[str(stiNumList[ss+1])][aa] =[]
+
+                nBlocks = len(tempChoice)//tStep + 1
+                if nBlocks == 1:  # if less than 50 trials
+                    Hit_rate = np.sum(tempChoice == 2) / np.sum(np.logical_or(tempChoice == 2,tempChoice == -2))
+                    FA_rate = np.sum(tempChoice == -1) / np.sum(np.logical_or(tempChoice == 0,tempChoice == -1))
+                    runningdPrime[str(stiNumList[ss+1])][aa] = norm.ppf(self.check_rate(Hit_rate)) - norm.ppf(self.check_rate(FA_rate))
+                else:
+                    for bb in range(nBlocks):
+                        startT = bb*tStep
+                        endT= (bb+1)*tStep
+                        if endT < len(tempChoice):
+                            Hit_rate = np.sum(tempChoice[startT:endT] == 2) / np.sum(
+                                np.logical_or(tempChoice[startT:endT] == 2,tempChoice[startT:endT]== -2))
+                            FA_rate = np.sum(tempChoice[startT:endT] == -1) / np.sum(
+                                np.logical_or(tempChoice[startT:endT] == -1,tempChoice[startT:endT]==0))
+                        else:
+                            Hit_rate = np.sum(tempChoice[startT:] == 2) / np.sum(
+                                np.logical_or(tempChoice[startT:] == 2, tempChoice[startT:] == -2))
+                            FA_rate = np.sum(tempChoice[startT:] == -1) / np.sum(
+                                np.logical_or(tempChoice[startT:] == -1, tempChoice[startT:] == 0))
+                        runningdPrime[str(stiNumList[ss+1])][aa] = np.append(
+                            runningdPrime[str(stiNumList[ss+1])][aa],norm.ppf(self.check_rate(Hit_rate)) - norm.ppf(self.check_rate(FA_rate)))
+
+        # reorganize the data into dataframe
+        # iterate through every stage (number of stimulus)
+        dPrimeMat_start = {} # aligned to the start of adding sound stimulus
+        dPrimeMat_end = {}   # alinged to the end of adding sound stimulus
+        for key in runningdPrime.keys():
+            max_length = max(len(v) for v in runningdPrime[key].values())
+            arr_1 = np.empty((max_length, len(runningdPrime[key])), dtype=float)
+            arr_1[:] = np.nan
+
+            arr_2 = np.empty((max_length, len(runningdPrime[key])), dtype=float)
+            arr_2[:] = np.nan
+
+            for i, kk in enumerate(sorted(runningdPrime[key].keys())):
+                arr_1[:len(runningdPrime[key][kk]), i] = runningdPrime[key][kk]
+                arr_2[-len(runningdPrime[key][kk]):, i] = runningdPrime[key][kk]
+            dPrimeMat_start[key] = arr_1
+            dPrimeMat_end[key] = arr_2
+
+        # separate animals into adult and juvenile
+
+        adtInd = [i for i in range(len(self.animalList)) if 'ADT' in self.animalList[i]]
+        juvInd = [i for i in range(len(self.animalList)) if 'JUV' in self.animalList[i]]
+        dP_plot = StartPlots()
+
+        startX = 0
+        adtColor = (255/255, 189/255, 53/255)
+        juvColor = (63/255, 167/255, 150/255)
+        x_Ticks = []  # xticks corresponding to the original figure
+        x_Ticks_show = []  # xticks showing the number of blocks from the aligne point
+        for key in dPrimeMat_start.keys():
+
+            # plot vertical line showing the stimulus transition
+            dP_plot.ax.axvline(x=startX-2.5, linestyle='--', color='black', linewidth=0.5)
+            plt.text(startX-2, 4, key)
+
+            # plot the part aligned to the start
+            adtD_1 = dPrimeMat_start[key][:,adtInd]
+            juvD_1 = dPrimeMat_start[key][:,juvInd]
+
+            # only look at data with more than two animals
+            adtI_1 = np.where(np.count_nonzero(~np.isnan(adtD_1), axis=1) > 2)[0]
+            juvI_1 = np.where(np.count_nonzero(~np.isnan(juvD_1), axis=1) > 2)[0]
+
+            plotLength = min(20, len(adtI_1),len(juvI_1))
+            xAxis = np.arange(startX, startX + plotLength)
+
+            adtPlot = adtD_1[adtI_1[:plotLength],:]
+            juvPlot = juvD_1[juvI_1[:plotLength],:]
+
+            # two-tail paird t-test for equal means
+            pVal = np.zeros(plotLength)
+            for i in range(plotLength):
+                _, pVal[i] = ttest_ind(adtPlot[i,:], juvPlot[i,:],nan_policy='omit')
+
+            dP_plot.ax.plot(xAxis, np.nanmean(adtPlot,1), color=adtColor, label='Adult')
+            se_11 = np.nanstd(adtPlot,1)/np.sqrt(np.count_nonzero(~np.isnan(adtPlot), axis=1))
+            dP_plot.ax.fill_between(xAxis, np.nanmean(adtPlot,1)-se_11,
+                                   np.nanmean(adtPlot,1)+se_11, color=adtColor,alpha=0.2, label='_nolegend_')
+
+            dP_plot.ax.plot(xAxis, np.nanmean(juvPlot,1), color=juvColor, label='Juvenile')
+            se_12 = np.nanstd(juvPlot, 1) / np.sqrt(np.count_nonzero(~np.isnan(juvPlot), axis=1))
+            dP_plot.ax.fill_between(xAxis, np.nanmean(juvPlot,1)-se_12,
+                                   np.nanmean(juvPlot,1)+se_12, color=juvColor,alpha=0.2, label='_nolegend_')
+
+            # plot p
+            for tt in range(plotLength):
+                if pVal[tt] < 0.05:
+                    dP_plot.ax.plot(xAxis[tt] + 1 * np.array([-0.5, 0.5]), [4, 4],
+                                                   color=(1, 0, 0), linewidth=5)
+
+            # set xticks
+            x_Ticks = np.append(x_Ticks, xAxis[0::3])
+            x_Ticks_show = np.append(x_Ticks_show, (xAxis[0::3]-startX).astype(str))
+
+            startX = startX + plotLength + 5
+
+            # plot the part aligned to the end
+            adtD_2 = dPrimeMat_end[key][:,adtInd]
+            juvD_2 = dPrimeMat_end[key][:,juvInd]
+
+            # only look at data with more than two animals
+            adtI_2 = np.where(np.count_nonzero(~np.isnan(adtD_2), axis=1) > 2)[0]
+            juvI_2 = np.where(np.count_nonzero(~np.isnan(juvD_2), axis=1) > 2)[0]
+            # t-test for d-prime data
+            #adtBoot = bootstrap(adtD, 1, adtD.shape[0], 1000)
+            #juvBoot = bootstrap(juvD, 1, juvD.shape[0], 1000)
+            plotLength = min(20, len(adtI_2),len(juvI_2))
+            xAxis = np.arange(startX, startX + plotLength)
+
+            adtPlot = adtD_2[adtI_2[-plotLength:],:]
+            juvPlot = juvD_2[juvI_2[-plotLength:],:]
+
+            # two-tail paird t-test for equal means
+            pVal = np.zeros(plotLength)
+            for i in range(plotLength):
+                _, pVal[i] = ttest_ind(adtPlot[i,:], juvPlot[i,:],nan_policy='omit')
+
+            dP_plot.ax.plot(xAxis, np.nanmean(adtPlot,1), color=adtColor, label='Adult')
+            se_21 = np.nanstd(adtPlot,1)/np.sqrt(np.count_nonzero(~np.isnan(adtPlot), axis=1))
+            dP_plot.ax.fill_between(xAxis, np.nanmean(adtPlot,1)-se_21,
+                                   np.nanmean(adtPlot,1)+se_21, color=adtColor,alpha=0.2, label='_nolegend_')
+
+            dP_plot.ax.plot(xAxis, np.nanmean(juvPlot,1), color=juvColor, label='Juvenile')
+            se_22 = np.nanstd(juvPlot,1)/np.sqrt(np.count_nonzero(~np.isnan(juvPlot), axis=1))
+            dP_plot.ax.fill_between(xAxis, np.nanmean(juvPlot,1)-se_22,
+                                   np.nanmean(juvPlot,1)+se_22, color=juvColor,alpha=0.2, label='_nolegend_')
+
+            # plot significance
+            for tt in range(plotLength):
+                if pVal[tt] < 0.05:
+                    dP_plot.ax.plot(xAxis[tt] + 1 * np.array([-0.5, 0.5]), [4, 4],
+                                                   color=(1, 0, 0), linewidth=5)
+
+            x_Ticks = np.append(x_Ticks, xAxis[0::3])
+            x_Ticks_show = np.append(x_Ticks_show, (-xAxis[::-1][0::3]+startX).astype(str))
+
+            startX = startX + plotLength + 5
+
+        dP_plot.ax.set_xticks(x_Ticks)
+        dP_plot.ax.set_xticklabels(x_Ticks_show,fontsize=8)
+        dP_plot.ax.set_xlabel('Number of 50 trial blocks')
+        dP_plot.ax.set_ylabel('Average d-prime')
+        dP_plot.legend(['Stimulus','Adult', 'Juvenile'])
+
+        plt.show()
+
+        dP_plot.save_plot('Average d-prime.svg', 'svg', save_path)
+        dP_plot.save_plot('Average d-prime.tif', 'tif', save_path)
+
+    def plot_rt(self, cues, save_path):
+        # plot the response time in a similar manner as the d-prime
+        # separate into ADT/JUV, Hit/FA, training state, combined cues/separated cues
+        # input: cues that need to be plotted
+        #       e.g. all cues [1,2,3,4,5,6,7,8]
+        #            single cue pairs [2,7]
+        #            probe cues (9.17,1)
+        stiNumList = [1, 2, 4, 6, 8]
+        tStep = 50 # calculate the average response time in block of 50 trials
+        runningRTHit_ADT_start = dict()
+        runningRTFA_ADT_start = dict()
+        runningRTHit_JUV_start = dict()
+        runningRTFA_JUV_start = dict()
+
+        runningRTHit_ADT_end= dict()
+        runningRTFA_ADT_end = dict()
+        runningRTHit_JUV_end = dict()
+        runningRTFA_JUV_end = dict()
+
+        for ss in range(len(stiNumList) - 1):
+            runningRTHit_ADT_start[str(stiNumList[ss+1])] = dict()
+            runningRTFA_ADT_start[str(stiNumList[ss+1])] = dict()
+
+            runningRTHit_JUV_start[str(stiNumList[ss+1])] = dict()
+            runningRTFA_JUV_start[str(stiNumList[ss+1])] = dict()
+
+            runningRTHit_ADT_end[str(stiNumList[ss+1])] = dict()
+            runningRTFA_ADT_end[str(stiNumList[ss+1])] = dict()
+
+            runningRTHit_JUV_end[str(stiNumList[ss+1])] = dict()
+            runningRTFA_JUV_end[str(stiNumList[ss+1])] = dict()
+
+            # look at 20 blocks maximum
+            for bb in tqdm(range(20)):
+                for iaa, aa in enumerate(self.animalList):
+
+                    totalInd = np.arange(len(self.concateChoice[aa]['numSound'])) # all trials available for animal aa
+                    blockInd = totalInd[np.logical_and(self.concateChoice[aa]['numSound'] > stiNumList[ss],
+                                                   self.concateChoice[aa]['numSound'] <= stiNumList[ss+1])] # trials available for given block ss
+
+                    # all available trials for cues/hit/FA of animal aa
+                    cueInd = [idx for idx in range(len(self.concateChoice[aa]['numSound'])) if self.concateChoice[aa]['sound'][idx] in cues]
+                    hitInd = [idx for idx in range(len(self.concateChoice[aa]['choice'])) if self.concateChoice[aa]['choice'][idx] > 0]
+                    FAInd = [idx for idx in range(len(self.concateChoice[aa]['choice'])) if self.concateChoice[aa]['choice'][idx] == -1]
+
+                    hitFAIndSet = set(hitInd) | set(FAInd) # combine FA and hit trials to get 50 trial blocks
+
+                    # trials needed: within block and cue, hit + false alarm trials
+                    tempIndSet = hitFAIndSet & set(blockInd) & set(cueInd)
+                    tempRT = self.concateChoice[aa]['respT'][list(tempIndSet)]
+                    tempInd = totalInd[list(tempIndSet)]
+
+                 # get the trials from the correct block, with the right cues, aligned to the block start
+                    if iaa == 0:
+                        runningRTHit_ADT_start[str(stiNumList[ss + 1])][bb] = np.array([])
+                        runningRTFA_ADT_start[str(stiNumList[ss + 1])][bb] = np.array([])
+
+                        runningRTHit_JUV_start[str(stiNumList[ss + 1])][bb] = np.array([])
+                        runningRTFA_JUV_start[str(stiNumList[ss + 1])][bb] = np.array([])
+
+                        runningRTHit_ADT_end[str(stiNumList[ss + 1])][bb] = np.array([])
+                        runningRTFA_ADT_end[str(stiNumList[ss + 1])][bb] = np.array([])
+
+                        runningRTHit_JUV_end[str(stiNumList[ss + 1])][bb] = np.array([])
+                        runningRTFA_JUV_end[str(stiNumList[ss + 1])][bb] = np.array([])
+
+                    # index to align to the block start
+                    startT_start = bb*tStep
+                    endT_start= (bb+1)*tStep
+
+                    # index to align to the block end
+                    startT_end = len(tempRT) - (bb+1)*tStep
+                    endT_end= len(tempRT) - bb*tStep-1
+
+                    # align to start
+                    if endT_start < len(tempRT):
+                        hitI_start = [list(tempInd).index(elem) for elem in
+                                      list(set(tempInd[startT_start:endT_start]) & set(hitInd))]
+                        FAI_start = [list(tempInd).index(elem) for elem in
+                                     list(set(tempInd[startT_start:endT_start]) & set(FAInd))]
+                    else:
+                        hitI_start = [list(tempInd).index(elem) for elem in
+                                      list(set(tempInd[startT_start:]) & set(hitInd))]
+                        FAI_start = [list(tempInd).index(elem) for elem in
+                                     list(set(tempInd[startT_start:]) & set(FAInd))]
+
+                    # align to end
+                    if startT_end > -1:
+                        hitI_end = [list(tempInd).index(elem) for elem in
+                                list(set(tempInd[startT_end:endT_end]) & set(hitInd))]
+                        FAI_end = [list(tempInd).index(elem) for elem in
+                               list(set(tempInd[startT_end:endT_end]) & set(FAInd))]
+                    elif startT_end <= -1 and endT_end > -1:
+                        hitI_end = [list(tempInd).index(elem) for elem in
+                                    list(set(tempInd[:endT_end]) & set(hitInd))]
+                        FAI_end = [list(tempInd).index(elem) for elem in
+                                   list(set(tempInd[:endT_end]) & set(FAInd))]
+                    elif endT_end <= -1:
+                        hitI_end = []
+                        FAI_end = []
+
+                    Hitresp_start = tempRT[hitI_start]
+                    FAresp_start = tempRT[FAI_start]
+
+                    Hitresp_end = tempRT[hitI_end]
+                    FAresp_end = tempRT[FAI_end]
+                # get the trials from the correct block, with the right cues, aligned to the block end
+
+
+                    if 'ADT' in aa:
+                        runningRTHit_ADT_start[str(stiNumList[ss + 1])][bb] = np.append(
+                            runningRTHit_ADT_start[str(stiNumList[ss + 1])][bb],Hitresp_start)
+                        runningRTFA_ADT_start[str(stiNumList[ss + 1])][bb] = np.append(
+                            runningRTFA_ADT_start[str(stiNumList[ss + 1])][bb],FAresp_start)
+
+                        runningRTHit_ADT_end[str(stiNumList[ss + 1])][bb] = np.append(
+                            runningRTHit_ADT_end[str(stiNumList[ss + 1])][bb],Hitresp_end)
+                        runningRTFA_ADT_end[str(stiNumList[ss + 1])][bb] = np.append(
+                            runningRTFA_ADT_end[str(stiNumList[ss + 1])][bb],FAresp_end)
+
+                    elif 'JUV' in aa:
+                        runningRTHit_JUV_start[str(stiNumList[ss + 1])][bb] = np.append(
+                            runningRTHit_JUV_start[str(stiNumList[ss + 1])][bb], Hitresp_start)
+                        runningRTFA_JUV_start[str(stiNumList[ss + 1])][bb] = np.append(
+                            runningRTFA_JUV_start[str(stiNumList[ss + 1])][bb], FAresp_start)
+
+                        runningRTHit_JUV_end[str(stiNumList[ss + 1])][bb] = np.append(
+                            runningRTHit_JUV_end[str(stiNumList[ss + 1])][bb],Hitresp_end)
+                        runningRTFA_JUV_end[str(stiNumList[ss + 1])][bb] = np.append(
+                            runningRTFA_JUV_end[str(stiNumList[ss + 1])][bb],FAresp_end)
+
+        # reorganize the data into dataframe
+        # iterate through every stage (number of stimulus)
+        dP_plot = StartPlots()
+
+        startX = 0
+        adtColor = (255/255, 189/255, 53/255)
+        juvColor = (63/255, 167/255, 150/255)
+        x_Ticks = []  # xticks corresponding to the original figure
+        x_Ticks_show = []  # xticks showing the number of blocks from the aligne point
+        for key in runningRTHit_ADT_start.keys():
+            # caculate average and standard error for each response time
+            ave_ADT_Hit_start, ste_ADT_Hit_start = self.get_meanste(runningRTHit_ADT_start[key])
+            ave_ADT_FA_start, ste_ADT_FA_start = self.get_meanste(runningRTFA_ADT_start[key])
+
+            ave_JUV_Hit_start, ste_JUV_Hit_start = self.get_meanste(runningRTHit_JUV_start[key])
+            ave_JUV_FA_start, ste_JUV_FA_start = self.get_meanste(runningRTFA_JUV_start[key])
+
+            ave_ADT_Hit_end, ste_ADT_Hit_end = self.get_meanste(runningRTHit_ADT_end[key])
+            ave_ADT_FA_end, ste_ADT_FA_end = self.get_meanste(runningRTFA_ADT_end[key])
+
+            ave_JUV_Hit_end, ste_JUV_Hit_end = self.get_meanste(runningRTHit_JUV_end[key])
+            ave_JUV_FA_end, ste_JUV_FA_end = self.get_meanste(runningRTFA_JUV_end[key])
+
+            # plot vertical line showing the stimulus transition
+            dP_plot.ax.axvline(x=startX-2.5, linestyle='--', color='black', linewidth=0.5)
+            plt.text(startX-2, 4, key)
+
+            # calculate the average response time
+
+            plotLength = min(np.count_nonzero(~np.isnan(ave_ADT_Hit_start)), np.count_nonzero(~np.isnan(ave_ADT_FA_start)),
+                             np.count_nonzero(~np.isnan(ave_JUV_Hit_start)),np.count_nonzero(~np.isnan(ave_JUV_Hit_start)))
+            xAxis = np.arange(startX, startX + plotLength)
+
+            # statistical test, anova?
+            #pVal = np.zeros(plotLength)
+            #for i in range(plotLength):
+            #    _, pVal[i] = ttest_ind(adtPlot[i,:], juvPlot[i,:],nan_policy='omit')
+
+        # plots aligned to the start
+            dP_plot.ax.plot(xAxis, ave_ADT_Hit_start[:plotLength], color=adtColor, label='Adult hit')
+            dP_plot.ax.fill_between(xAxis, ave_ADT_Hit_start[:plotLength]-ste_ADT_Hit_start[:plotLength],
+                                   ave_ADT_Hit_start[:plotLength]+ste_ADT_Hit_start[:plotLength],
+                                color=adtColor,alpha=0.2, label='_nolegend_')
+
+            dP_plot.ax.plot(xAxis, ave_ADT_FA_start[:plotLength], linestyle = '--', color=adtColor, label='Adult FA')
+            dP_plot.ax.fill_between(xAxis, ave_ADT_FA_start[:plotLength]-ste_ADT_FA_start[:plotLength],
+                                   ave_ADT_FA_start[:plotLength]+ste_ADT_FA_start[:plotLength],
+                                   color=adtColor,alpha=0.2, label='_nolegend_')
+
+            dP_plot.ax.plot(xAxis, ave_JUV_Hit_start[:plotLength], color=juvColor, label='Juvinile hit')
+            dP_plot.ax.fill_between(xAxis, ave_JUV_Hit_start[:plotLength]-ste_JUV_Hit_start[:plotLength],
+                                   ave_JUV_Hit_start[:plotLength]+ste_JUV_Hit_start[:plotLength],
+                                    color=juvColor,alpha=0.2, label='_nolegend_')
+
+            dP_plot.ax.plot(xAxis, ave_JUV_FA_start[:plotLength], linestyle = '--', color=juvColor, label='Juvenile FA')
+            dP_plot.ax.fill_between(xAxis, ave_JUV_FA_start[:plotLength]-ste_JUV_FA_start[:plotLength],
+                                   ave_JUV_FA_start[:plotLength]+ste_JUV_FA_start[:plotLength],
+                                   color=juvColor,alpha=0.2, label='_nolegend_')
+
+            # plot p
+            # for tt in range(plotLength):
+            #    if pVal[tt] < 0.05:
+            #        dP_plot.ax.plot(xAxis[tt] + 1 * np.array([-0.5, 0.5]), [4, 4],
+            #                                       color=(1, 0, 0), linewidth=5)
+
+            # set xticks
+            x_Ticks = np.append(x_Ticks, xAxis[0::3])
+            x_Ticks_show = np.append(x_Ticks_show, (xAxis[0::3]-startX).astype(str))
+
+            startX = startX + plotLength + 5
+
+        # plot the part aligned to the end
+
+            # only look at data with more than two animals
+
+            # t-test for d-prime data
+            plotLength = min(np.count_nonzero(~np.isnan(ave_ADT_Hit_end)), np.count_nonzero(~np.isnan(ave_ADT_FA_end)),
+                             np.count_nonzero(~np.isnan(ave_JUV_Hit_end)),np.count_nonzero(~np.isnan(ave_JUV_Hit_end)))
+            xAxis = np.arange(startX, startX + plotLength)
+
+            if plotLength>0:
+                dP_plot.ax.plot(xAxis, ave_ADT_Hit_end[plotLength-1::-1], color=adtColor, label='Adult hit')
+                dP_plot.ax.fill_between(xAxis, ave_ADT_Hit_end[plotLength-1::-1]-ste_ADT_Hit_end[plotLength-1::-1],
+                                       ave_ADT_Hit_end[plotLength-1::-1]+ste_ADT_Hit_end[plotLength-1::-1],
+                                       color=adtColor,alpha=0.2, label='_nolegend_')
+
+                dP_plot.ax.plot(xAxis, ave_ADT_FA_end[plotLength-1::-1], linestyle = '--', color=adtColor, label='Adult FA')
+                dP_plot.ax.fill_between(xAxis, ave_ADT_FA_end[plotLength-1::-1]-ste_ADT_FA_end[plotLength-1::-1],
+                                       ave_ADT_FA_end[plotLength-1::-1]+ste_ADT_FA_end[plotLength-1::-1],
+                                       color=adtColor,alpha=0.2, label='_nolegend_')
+
+                dP_plot.ax.plot(xAxis, ave_JUV_Hit_end[plotLength-1::-1], color=juvColor, label='Juvinile hit')
+                dP_plot.ax.fill_between(xAxis, ave_JUV_Hit_end[plotLength-1::-1]-ste_JUV_Hit_end[plotLength-1::-1],
+                                       ave_JUV_Hit_end[plotLength-1::-1]+ste_JUV_Hit_end[plotLength-1::-1],
+                                        color=juvColor,alpha=0.2, label='_nolegend_')
+
+                dP_plot.ax.plot(xAxis, ave_JUV_FA_end[plotLength-1::-1], linestyle = '--', color=juvColor, label='Juvenile FA')
+                dP_plot.ax.fill_between(xAxis, ave_JUV_FA_end[plotLength-1::-1]-ste_JUV_FA_end[plotLength-1::-1],
+                                       ave_JUV_FA_end[plotLength-1::-1]+ste_JUV_FA_end[plotLength-1::-1],
+                                       color=juvColor,alpha=0.2, label='_nolegend_')
+
+
+            x_Ticks = np.append(x_Ticks, xAxis[0::3])
+            x_Ticks_show = np.append(x_Ticks_show, (-xAxis[::-1][0::3]+startX).astype(str))
+
+            startX = startX + plotLength + 5
+
+        dP_plot.ax.set_xticks(x_Ticks)
+        dP_plot.ax.set_xticklabels(x_Ticks_show,fontsize=8)
+        dP_plot.ax.set_xlabel('Number of 50 trial blocks')
+        dP_plot.ax.set_ylabel('Average response time (s)')
+        titletext = '-'.join(str(i) for i in cues)
+        dP_plot.ax.set_title('Average response time cue(' + titletext + ')')
+        dP_plot.legend(['Stimulus','Adult hit','Adult FA', 'Juvenile hit', 'Juvenile FA'])
+        dP_plot.fig.set_figwidth(30)
+
+        plt.show()
+
+
+        dP_plot.save_plot('Average response time cue(' + titletext + ').svg', 'svg', save_path)
+        dP_plot.save_plot('Average response time cue(' + titletext + ').tif', 'tif', save_path)
+
+    def get_meanste(self, data):
+        """
+        for a input dictionary, return average and standard error
+        used only for deal with response time data
+        """
+        ave = np.zeros((len(data.keys())))
+        ste = np.zeros((len(data.keys())))
+
+        for idx, kk in enumerate(data.keys()):
+            ave[idx] = np.nanmean(data[kk])
+            ste[idx] = np.nanstd(data[kk]) / np.sqrt(np.count_nonzero(~np.isnan(data[kk])))
+
+        return ave, ste
+
+    def check_rate(self, rate):
+        # for d-prime calculation
+        # if value == 1, change to 0.9999
+        # if value == 0, change to 0.0001
+        if rate == 1:
+            rate = 0.9999
+        elif rate == 0:
+            rate = 0.0001
+
+        return rate
+
 if __name__ == "__main__":
     # animal = 'JUV011'
     # session = '211215'
@@ -955,8 +1466,13 @@ if __name__ == "__main__":
     # x.running_aligned('onset')
     root_dir = r'X:\HongliWang\Madeline'
     beh_sum = GoNogoBehaviorSum(root_dir)
-    matplotlib.use('Agg')
-    beh_sum.process_singleSession(ifrun = True)
+    #matplotlib.use('Agg')
+    #beh_sum.process_singleSession(ifrun=True)
     beh_sum.read_data()
 
+    savefigpath = os.path.join(root_dir,'summary','behavior')
+    # beh_sum.plot_dP(savefigpath)
+    beh_sum.plot_rt([1,2,3,4,5,6,7,8],savefigpath)
+
+    matplotlib.use('QtAgg')
     x=1
