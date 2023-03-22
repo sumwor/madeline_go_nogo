@@ -8,6 +8,7 @@ from pyPlotHW import StartPlots, StartSubplots
 from utility_HW import bootstrap
 import glob
 from tqdm import tqdm
+import seaborn as sns
 
 import matplotlib.pyplot as plt
 import matplotlib
@@ -15,6 +16,9 @@ import matplotlib
 from scipy.optimize import minimize
 from scipy.stats import norm, ttest_ind
 import statsmodels.api as sm
+from statsmodels.formula.api import ols
+from statsmodels.stats.multicomp import MultiComparison
+
 
 import pandas as pd
 import pickle
@@ -333,9 +337,21 @@ class GoNogoBehaviorMat(BehaviorMat):
         Hit_rate = np.sum(self.DF['choice'] == 2) / nTrialGo
         FA_rate = np.sum(self.DF['choice'] == -1) / nTrialNoGo
 
-        d_prime = norm.ppf(Hit_rate) - norm.ppf(FA_rate)
+
+        d_prime = norm.ppf(self.check_rate(Hit_rate)) - norm.ppf(self.check_rate(FA_rate))
 
         self.saveData['d-prime'] = d_prime
+
+    def check_rate(self, rate):
+        # for d-prime calculation
+        # if value == 1, change to 0.9999
+        # if value == 0, change to 0.0001
+        if rate == 1:
+            rate = 0.9999
+        elif rate == 0:
+            rate = 0.0001
+
+        return rate
 
     def psycho_curve(self, save_path, ifrun):
         # get variables
@@ -378,6 +394,9 @@ class GoNogoBehaviorMat(BehaviorMat):
             sortednumGo = numGo[sortedInd]
             sortednumSound = sound[sortedInd]
 
+            # save the data and frequency
+            self.saveData['psycho_data'] = sortednumGo/sortednumSound
+            self.saveData['psycho-sti'] = soundFreqTotal[sortedInd]
 
             # fit logistic regression
             y = sortednumGo[stiSortedInd] / sortednumSound[stiSortedInd]
@@ -950,6 +969,7 @@ class GoNogoBehaviorSum:
             if ff == 0:
                 self.beh_dict['animal'] = [None] * nFiles
                 self.beh_dict['session'] = [None] * nFiles
+                self.beh_dict['stiFreq'] = my_data['psycho-sti']
 
             self.beh_dict['animal'][ff] = my_data['behDF'].iloc[0]['animal']
             self.beh_dict['session'][ff] = my_data['behDF'].iloc[0]['session']
@@ -957,11 +977,11 @@ class GoNogoBehaviorSum:
 
            # initialize the summary dictionary if it is the first file
             for key in my_data.keys():
-                if not key in ['behDF', 'rtbyTrial'] and not 'run' in key:
+                if not key in ['behDF', 'rtbyTrial', 'psycho-sti'] and not 'run' in key:
                     # ignore the run_aligned for now, until coming up with how to summarize it
 
                     if isinstance(my_data[key], np.ndarray):
-                        # L-fit is the only array for now
+                        # L-fit and psycho_data are the only array for now
                         if ff == 0:
                             self.beh_dict[key] = np.zeros((len(my_data[key]), nFiles))
                         # set the value
@@ -989,8 +1009,6 @@ class GoNogoBehaviorSum:
                             self.beh_dict[key] = np.zeros((nFiles))
                         # set value
                         self.beh_dict[key][ff] = my_data[key]
-
-
 
     def plot_dP(self, save_path):
         # plot d-prime progress by animals
@@ -1129,7 +1147,7 @@ class GoNogoBehaviorSum:
             adtPlot = adtD_2[adtI_2[-plotLength:],:]
             juvPlot = juvD_2[juvI_2[-plotLength:],:]
 
-            # two-tail paird t-test for equal means
+            # two-tail t-test for equal means
             pVal = np.zeros(plotLength)
             for i in range(plotLength):
                 _, pVal[i] = ttest_ind(adtPlot[i,:], juvPlot[i,:],nan_policy='omit')
@@ -1218,6 +1236,24 @@ class GoNogoBehaviorSum:
                     tempRT = self.concateChoice[aa]['respT'][list(tempIndSet)]
                     tempInd = totalInd[list(tempIndSet)]
 
+        # for probe trials, separate probe trials into go probe trials and no go probe trials
+        # since there are only 1% probe trials, consider all probe trials together
+                    goProbe = [9,10,11,12]
+                    nogoProbe = [13,14,15,16]
+
+                    if 9 in cues: # if deal with probe trials
+                        hitInd = [idx for idx in range(len(self.concateChoice[aa]['choice'])) if
+                                  (self.concateChoice[aa]['sound'][idx] in goProbe and self.concateChoice[aa]['choice'][idx] == -3)]   # hit here refers to go probe trials
+                        FAInd = [idx for idx in range(len(self.concateChoice[aa]['choice'])) if
+                                 (self.concateChoice[aa]['sound'][idx] in nogoProbe and self.concateChoice[aa]['choice'][idx] == -3)]  # false alarm here refers to nogo probe trials
+
+                        hitFAIndSet = set(hitInd) | set(FAInd)  # combine FA and hit trials to get 50 trial blocks
+
+                        # trials needed: within block and cue, go/no go probe trials
+                        tempIndSet = hitFAIndSet & set(blockInd) & set(cueInd)
+                        tempRT = self.concateChoice[aa]['respT'][list(tempIndSet)]
+                        tempInd = totalInd[list(tempIndSet)]
+
                  # get the trials from the correct block, with the right cues, aligned to the block start
                     if iaa == 0:
                         runningRTHit_ADT_start[str(stiNumList[ss + 1])][bb] = np.array([])
@@ -1299,125 +1335,369 @@ class GoNogoBehaviorSum:
 
         # reorganize the data into dataframe
         # iterate through every stage (number of stimulus)
-        dP_plot = StartPlots()
 
-        startX = 0
-        adtColor = (255/255, 189/255, 53/255)
-        juvColor = (63/255, 167/255, 150/255)
-        x_Ticks = []  # xticks corresponding to the original figure
-        x_Ticks_show = []  # xticks showing the number of blocks from the aligne point
-        for key in runningRTHit_ADT_start.keys():
-            # caculate average and standard error for each response time
-            ave_ADT_Hit_start, ste_ADT_Hit_start = self.get_meanste(runningRTHit_ADT_start[key])
-            ave_ADT_FA_start, ste_ADT_FA_start = self.get_meanste(runningRTFA_ADT_start[key])
+        if not 9 in cues:  # for go no-go trials with cue 1-9
+            # make a same plot for the final stage of [1
+            dP_plot = StartPlots()
 
-            ave_JUV_Hit_start, ste_JUV_Hit_start = self.get_meanste(runningRTHit_JUV_start[key])
-            ave_JUV_FA_start, ste_JUV_FA_start = self.get_meanste(runningRTFA_JUV_start[key])
+            startX = 0
+            adtColor = (255/255, 189/255, 53/255)
+            juvColor = (63/255, 167/255, 150/255)
+            x_Ticks = []  # xticks corresponding to the original figure
+            x_Ticks_show = []  # xticks showing the number of blocks from the aligne point
+            for key in runningRTHit_ADT_start.keys():
+                # caculate average and standard error for each response time
+                ave_ADT_Hit_start, ste_ADT_Hit_start = self.get_meanste(runningRTHit_ADT_start[key])
+                ave_ADT_FA_start, ste_ADT_FA_start = self.get_meanste(runningRTFA_ADT_start[key])
 
-            ave_ADT_Hit_end, ste_ADT_Hit_end = self.get_meanste(runningRTHit_ADT_end[key])
-            ave_ADT_FA_end, ste_ADT_FA_end = self.get_meanste(runningRTFA_ADT_end[key])
+                ave_JUV_Hit_start, ste_JUV_Hit_start = self.get_meanste(runningRTHit_JUV_start[key])
+                ave_JUV_FA_start, ste_JUV_FA_start = self.get_meanste(runningRTFA_JUV_start[key])
 
-            ave_JUV_Hit_end, ste_JUV_Hit_end = self.get_meanste(runningRTHit_JUV_end[key])
-            ave_JUV_FA_end, ste_JUV_FA_end = self.get_meanste(runningRTFA_JUV_end[key])
+                ave_ADT_Hit_end, ste_ADT_Hit_end = self.get_meanste(runningRTHit_ADT_end[key])
+                ave_ADT_FA_end, ste_ADT_FA_end = self.get_meanste(runningRTFA_ADT_end[key])
 
-            # plot vertical line showing the stimulus transition
-            dP_plot.ax.axvline(x=startX-2.5, linestyle='--', color='black', linewidth=0.5)
-            plt.text(startX-2, 4, key)
+                ave_JUV_Hit_end, ste_JUV_Hit_end = self.get_meanste(runningRTHit_JUV_end[key])
+                ave_JUV_FA_end, ste_JUV_FA_end = self.get_meanste(runningRTFA_JUV_end[key])
 
-            # calculate the average response time
+                # plot vertical line showing the stimulus transition
+                dP_plot.ax.axvline(x=startX-2.5, linestyle='--', color='black', linewidth=0.5)
+                plt.text(startX-2, 4, key)
 
-            plotLength = min(np.count_nonzero(~np.isnan(ave_ADT_Hit_start)), np.count_nonzero(~np.isnan(ave_ADT_FA_start)),
-                             np.count_nonzero(~np.isnan(ave_JUV_Hit_start)),np.count_nonzero(~np.isnan(ave_JUV_Hit_start)))
-            xAxis = np.arange(startX, startX + plotLength)
+                # calculate the average response time
 
-            # statistical test, anova?
-            #pVal = np.zeros(plotLength)
-            #for i in range(plotLength):
-            #    _, pVal[i] = ttest_ind(adtPlot[i,:], juvPlot[i,:],nan_policy='omit')
+                plotLength = min(np.count_nonzero(~np.isnan(ave_ADT_Hit_start)), np.count_nonzero(~np.isnan(ave_ADT_FA_start)),
+                                 np.count_nonzero(~np.isnan(ave_JUV_Hit_start)),np.count_nonzero(~np.isnan(ave_JUV_Hit_start)))
+                xAxis = np.arange(startX, startX + plotLength)
 
-        # plots aligned to the start
-            dP_plot.ax.plot(xAxis, ave_ADT_Hit_start[:plotLength], color=adtColor, label='Adult hit')
-            dP_plot.ax.fill_between(xAxis, ave_ADT_Hit_start[:plotLength]-ste_ADT_Hit_start[:plotLength],
-                                   ave_ADT_Hit_start[:plotLength]+ste_ADT_Hit_start[:plotLength],
-                                color=adtColor,alpha=0.2, label='_nolegend_')
+                # statistical test, anova?
+                #pVal = np.zeros(plotLength)
+                #for i in range(plotLength):
+                #    _, pVal[i] = ttest_ind(adtPlot[i,:], juvPlot[i,:],nan_policy='omit')
 
-            dP_plot.ax.plot(xAxis, ave_ADT_FA_start[:plotLength], linestyle = '--', color=adtColor, label='Adult FA')
-            dP_plot.ax.fill_between(xAxis, ave_ADT_FA_start[:plotLength]-ste_ADT_FA_start[:plotLength],
-                                   ave_ADT_FA_start[:plotLength]+ste_ADT_FA_start[:plotLength],
-                                   color=adtColor,alpha=0.2, label='_nolegend_')
+            # plots aligned to the start
+                dP_plot.ax.plot(xAxis, ave_ADT_Hit_start[:plotLength], color=adtColor, label='Adult hit')
+                dP_plot.ax.fill_between(xAxis, ave_ADT_Hit_start[:plotLength]-ste_ADT_Hit_start[:plotLength],
+                                       ave_ADT_Hit_start[:plotLength]+ste_ADT_Hit_start[:plotLength],
+                                    color=adtColor,alpha=0.2, label='_nolegend_')
 
-            dP_plot.ax.plot(xAxis, ave_JUV_Hit_start[:plotLength], color=juvColor, label='Juvinile hit')
-            dP_plot.ax.fill_between(xAxis, ave_JUV_Hit_start[:plotLength]-ste_JUV_Hit_start[:plotLength],
-                                   ave_JUV_Hit_start[:plotLength]+ste_JUV_Hit_start[:plotLength],
-                                    color=juvColor,alpha=0.2, label='_nolegend_')
-
-            dP_plot.ax.plot(xAxis, ave_JUV_FA_start[:plotLength], linestyle = '--', color=juvColor, label='Juvenile FA')
-            dP_plot.ax.fill_between(xAxis, ave_JUV_FA_start[:plotLength]-ste_JUV_FA_start[:plotLength],
-                                   ave_JUV_FA_start[:plotLength]+ste_JUV_FA_start[:plotLength],
-                                   color=juvColor,alpha=0.2, label='_nolegend_')
-
-            # plot p
-            # for tt in range(plotLength):
-            #    if pVal[tt] < 0.05:
-            #        dP_plot.ax.plot(xAxis[tt] + 1 * np.array([-0.5, 0.5]), [4, 4],
-            #                                       color=(1, 0, 0), linewidth=5)
-
-            # set xticks
-            x_Ticks = np.append(x_Ticks, xAxis[0::3])
-            x_Ticks_show = np.append(x_Ticks_show, (xAxis[0::3]-startX).astype(str))
-
-            startX = startX + plotLength + 5
-
-        # plot the part aligned to the end
-
-            # only look at data with more than two animals
-
-            # t-test for d-prime data
-            plotLength = min(np.count_nonzero(~np.isnan(ave_ADT_Hit_end)), np.count_nonzero(~np.isnan(ave_ADT_FA_end)),
-                             np.count_nonzero(~np.isnan(ave_JUV_Hit_end)),np.count_nonzero(~np.isnan(ave_JUV_Hit_end)))
-            xAxis = np.arange(startX, startX + plotLength)
-
-            if plotLength>0:
-                dP_plot.ax.plot(xAxis, ave_ADT_Hit_end[plotLength-1::-1], color=adtColor, label='Adult hit')
-                dP_plot.ax.fill_between(xAxis, ave_ADT_Hit_end[plotLength-1::-1]-ste_ADT_Hit_end[plotLength-1::-1],
-                                       ave_ADT_Hit_end[plotLength-1::-1]+ste_ADT_Hit_end[plotLength-1::-1],
+                dP_plot.ax.plot(xAxis, ave_ADT_FA_start[:plotLength], linestyle = '--', color=adtColor, label='Adult FA')
+                dP_plot.ax.fill_between(xAxis, ave_ADT_FA_start[:plotLength]-ste_ADT_FA_start[:plotLength],
+                                       ave_ADT_FA_start[:plotLength]+ste_ADT_FA_start[:plotLength],
                                        color=adtColor,alpha=0.2, label='_nolegend_')
 
-                dP_plot.ax.plot(xAxis, ave_ADT_FA_end[plotLength-1::-1], linestyle = '--', color=adtColor, label='Adult FA')
-                dP_plot.ax.fill_between(xAxis, ave_ADT_FA_end[plotLength-1::-1]-ste_ADT_FA_end[plotLength-1::-1],
-                                       ave_ADT_FA_end[plotLength-1::-1]+ste_ADT_FA_end[plotLength-1::-1],
-                                       color=adtColor,alpha=0.2, label='_nolegend_')
-
-                dP_plot.ax.plot(xAxis, ave_JUV_Hit_end[plotLength-1::-1], color=juvColor, label='Juvinile hit')
-                dP_plot.ax.fill_between(xAxis, ave_JUV_Hit_end[plotLength-1::-1]-ste_JUV_Hit_end[plotLength-1::-1],
-                                       ave_JUV_Hit_end[plotLength-1::-1]+ste_JUV_Hit_end[plotLength-1::-1],
+                dP_plot.ax.plot(xAxis, ave_JUV_Hit_start[:plotLength], color=juvColor, label='Juvinile hit')
+                dP_plot.ax.fill_between(xAxis, ave_JUV_Hit_start[:plotLength]-ste_JUV_Hit_start[:plotLength],
+                                       ave_JUV_Hit_start[:plotLength]+ste_JUV_Hit_start[:plotLength],
                                         color=juvColor,alpha=0.2, label='_nolegend_')
 
-                dP_plot.ax.plot(xAxis, ave_JUV_FA_end[plotLength-1::-1], linestyle = '--', color=juvColor, label='Juvenile FA')
-                dP_plot.ax.fill_between(xAxis, ave_JUV_FA_end[plotLength-1::-1]-ste_JUV_FA_end[plotLength-1::-1],
-                                       ave_JUV_FA_end[plotLength-1::-1]+ste_JUV_FA_end[plotLength-1::-1],
+                dP_plot.ax.plot(xAxis, ave_JUV_FA_start[:plotLength], linestyle = '--', color=juvColor, label='Juvenile FA')
+                dP_plot.ax.fill_between(xAxis, ave_JUV_FA_start[:plotLength]-ste_JUV_FA_start[:plotLength],
+                                       ave_JUV_FA_start[:plotLength]+ste_JUV_FA_start[:plotLength],
                                        color=juvColor,alpha=0.2, label='_nolegend_')
 
+                # plot p
+                # for tt in range(plotLength):
+                #    if pVal[tt] < 0.05:
+                #        dP_plot.ax.plot(xAxis[tt] + 1 * np.array([-0.5, 0.5]), [4, 4],
+                #                                       color=(1, 0, 0), linewidth=5)
 
-            x_Ticks = np.append(x_Ticks, xAxis[0::3])
-            x_Ticks_show = np.append(x_Ticks_show, (-xAxis[::-1][0::3]+startX).astype(str))
+                # set xticks
+                x_Ticks = np.append(x_Ticks, xAxis[0::3])
+                x_Ticks_show = np.append(x_Ticks_show, (xAxis[0::3]-startX).astype(str))
 
-            startX = startX + plotLength + 5
+                startX = startX + plotLength + 5
 
-        dP_plot.ax.set_xticks(x_Ticks)
-        dP_plot.ax.set_xticklabels(x_Ticks_show,fontsize=8)
-        dP_plot.ax.set_xlabel('Number of 50 trial blocks')
-        dP_plot.ax.set_ylabel('Average response time (s)')
+            # plot the part aligned to the end
+
+                # only look at data with more than two animals
+
+                # t-test for d-prime data
+                plotLength = min(np.count_nonzero(~np.isnan(ave_ADT_Hit_end)), np.count_nonzero(~np.isnan(ave_ADT_FA_end)),
+                                 np.count_nonzero(~np.isnan(ave_JUV_Hit_end)),np.count_nonzero(~np.isnan(ave_JUV_Hit_end)))
+                xAxis = np.arange(startX, startX + plotLength)
+
+                if plotLength>0:
+                    dP_plot.ax.plot(xAxis, ave_ADT_Hit_end[plotLength-1::-1], color=adtColor, label='Adult hit')
+                    dP_plot.ax.fill_between(xAxis, ave_ADT_Hit_end[plotLength-1::-1]-ste_ADT_Hit_end[plotLength-1::-1],
+                                           ave_ADT_Hit_end[plotLength-1::-1]+ste_ADT_Hit_end[plotLength-1::-1],
+                                           color=adtColor,alpha=0.2, label='_nolegend_')
+
+                    dP_plot.ax.plot(xAxis, ave_ADT_FA_end[plotLength-1::-1], linestyle = '--', color=adtColor, label='Adult FA')
+                    dP_plot.ax.fill_between(xAxis, ave_ADT_FA_end[plotLength-1::-1]-ste_ADT_FA_end[plotLength-1::-1],
+                                           ave_ADT_FA_end[plotLength-1::-1]+ste_ADT_FA_end[plotLength-1::-1],
+                                           color=adtColor,alpha=0.2, label='_nolegend_')
+
+                    dP_plot.ax.plot(xAxis, ave_JUV_Hit_end[plotLength-1::-1], color=juvColor, label='Juvinile hit')
+                    dP_plot.ax.fill_between(xAxis, ave_JUV_Hit_end[plotLength-1::-1]-ste_JUV_Hit_end[plotLength-1::-1],
+                                           ave_JUV_Hit_end[plotLength-1::-1]+ste_JUV_Hit_end[plotLength-1::-1],
+                                            color=juvColor,alpha=0.2, label='_nolegend_')
+
+                    dP_plot.ax.plot(xAxis, ave_JUV_FA_end[plotLength-1::-1], linestyle = '--', color=juvColor, label='Juvenile FA')
+                    dP_plot.ax.fill_between(xAxis, ave_JUV_FA_end[plotLength-1::-1]-ste_JUV_FA_end[plotLength-1::-1],
+                                           ave_JUV_FA_end[plotLength-1::-1]+ste_JUV_FA_end[plotLength-1::-1],
+                                           color=juvColor,alpha=0.2, label='_nolegend_')
+
+
+                x_Ticks = np.append(x_Ticks, xAxis[0::3])
+                x_Ticks_show = np.append(x_Ticks_show, (-xAxis[::-1][0::3]+startX).astype(str))
+
+                startX = startX + plotLength + 5
+
+                dP_plot.ax.set_xticks(x_Ticks)
+                dP_plot.ax.set_xticklabels(x_Ticks_show, fontsize=8)
+                dP_plot.ax.set_xlabel('Number of 50 trial blocks')
+                dP_plot.ax.set_ylabel('Average response time (s)')
+                titletext = '-'.join(str(i) for i in cues)
+                dP_plot.ax.set_title('Average response time cue(' + titletext + ')')
+                dP_plot.legend(['Stimulus', 'Adult hit', 'Adult FA', 'Juvenile hit', 'Juvenile FA'])
+                dP_plot.fig.set_figwidth(30)
+
+                ## make a same violin plot as in probe trials
+                ## with the last 2000 trials (assume they are relative stable behavior)
+            plt.show()
+
+            dP_plot.save_plot('Average response time cue(' + titletext + ').svg', 'svg', save_path)
+            dP_plot.save_plot('Average response time cue(' + titletext + ').tif', 'tif', save_path)
+
+
+        # plot end stage analysis of average response time for cues
+
+                # plot go-probe/no-go probe in bar plot
+        key = '8'
+                # combine the blocks
+
+            # for probe trials: these variable correpond to: adult (near) go cue; adult nogo cue; juv go cue; juv nogo cue
+            # for task (1-8) trials: adult hit; adult FA; juv hit; juv FA
+
+        ADTProbeGoRT = np.array([])
+        ADTProbeNogoRT = np.array([])
+        JUVProbeGoRT = np.array([])
+        JUVProbeNogoRT = np.array([])
+
+        for kk in runningRTHit_ADT_end[key].keys():
+            if len(runningRTHit_ADT_end[key][kk])>0:
+                ADTProbeGoRT = np.append(ADTProbeGoRT, runningRTHit_ADT_end[key][kk])
+            if len(runningRTFA_ADT_end[key][kk]) > 0:
+                ADTProbeNogoRT = np.append(ADTProbeNogoRT, runningRTFA_ADT_end[key][kk])
+            if len(runningRTHit_JUV_end[key][kk]) > 0:
+                JUVProbeGoRT = np.append(JUVProbeGoRT, runningRTHit_JUV_end[key][kk])
+            if len(runningRTFA_JUV_end[key][kk]) > 0:
+                JUVProbeNogoRT = np.append(JUVProbeNogoRT, runningRTFA_JUV_end[key][kk])
+
+        adtColor = (255 / 255, 189 / 255, 53 / 255)
+        juvColor = (63 / 255, 167 / 255, 150 / 255)
+
+            # get rid of the nan values
+        ADTProbeGoRT = ADTProbeGoRT[~np.isnan(ADTProbeGoRT)]
+        ADTProbeNogoRT = ADTProbeNogoRT[~np.isnan(ADTProbeNogoRT)]
+        JUVProbeGoRT = JUVProbeGoRT[~np.isnan(JUVProbeGoRT)]
+        JUVProbeNogoRT = JUVProbeNogoRT[~np.isnan(JUVProbeNogoRT)]
+            # Label the columns of the DataFrame
+
+        aveRT_plot = StartPlots()
+
+                # create a figure and axis object
+
+                # plot the violins
+            #sns.violinplot([ADTProbeGoRT, ADTProbeNogoRT], ax = aveRT_plot.ax, color = adtColor)
+            #sns.violinplot([JUVProbeGoRT, JUVProbeNogoRT], ax = aveRT_plot.ax, color=juvColor)
+        vp1 = aveRT_plot.ax.violinplot([ADTProbeGoRT, ADTProbeNogoRT],
+                    positions=[1,4], showmedians=True, showextrema=False, widths=0.5)
+        vp2 = aveRT_plot.ax.violinplot([JUVProbeGoRT, JUVProbeNogoRT],
+                    positions=[2,5], showmedians=True, showextrema=False, widths=0.5)
+
+        vp1['bodies'][0].set_facecolor(adtColor)
+        vp1['bodies'][1].set_facecolor(adtColor)
+        vp1['cmedians'].set_color(adtColor)
+
+        vp2['bodies'][0].set_facecolor(juvColor)
+        vp2['bodies'][1].set_facecolor(juvColor)
+        vp2['cmedians'].set_color(juvColor)
+
+
+        aveRT_plot.ax.set_xticks([1, 2, 4, 5])
+        aveRT_plot.ax.set_xticklabels(['ADT go', 'JUV go', 'ADT nogo', 'JUV nogo'])
+
+        aveRT_plot.ax.set_ylabel('Average response time (s)')
         titletext = '-'.join(str(i) for i in cues)
-        dP_plot.ax.set_title('Average response time cue(' + titletext + ')')
-        dP_plot.legend(['Stimulus','Adult hit','Adult FA', 'Juvenile hit', 'Juvenile FA'])
-        dP_plot.fig.set_figwidth(30)
+        aveRT_plot.ax.set_title('Average response time cue(' + titletext + ')')
+        aveRT_plot.fig.set_figwidth(8)
 
-        plt.show()
+        aveRT_plot.save_plot('Average response time (end stage) cue(' + titletext + ').svg', 'svg', save_path)
+        aveRT_plot.save_plot('Average response time (end stage) cue(' + titletext + ').tif', 'tif', save_path)
+                # perform two way anova
+        numData = len(ADTProbeGoRT) + len(ADTProbeNogoRT) + len(JUVProbeGoRT) + len(JUVProbeNogoRT)
+
+        age_anova = []
+        response_anova = []
+        respT_anova = []
+
+                # loop through every group
+        for t in ADTProbeGoRT:
+            age_anova.append('ADT')
+            response_anova.append('go')
+            respT_anova.append(t)
+
+        for t in ADTProbeNogoRT:
+            age_anova.append('ADT')
+            response_anova.append('nogo')
+            respT_anova.append(t)
+
+        for t in JUVProbeGoRT:
+            age_anova.append('JUV')
+            response_anova.append('go')
+            respT_anova.append(t)
+
+        for t in JUVProbeNogoRT:
+            age_anova.append('JUV')
+            response_anova.append('nogo')
+            respT_anova.append(t)
+
+        anova_data = pd.DataFrame({'age':age_anova,
+                                           'response': response_anova,
+                                           'respT': respT_anova
+                                           })
+        model = ols('respT ~ age + response + age:response', anova_data).fit()
+        anova_table = sm.stats.anova_lm(model, typ=2)
+
+                # print ANOVA table
+        print(anova_table)
+
+        from statsmodels.stats.multicomp import pairwise_tukeyhsd
+        mc = pairwise_tukeyhsd(anova_data['respT'], anova_data['age'] + anova_data['response'])
+        print(mc)
 
 
-        dP_plot.save_plot('Average response time cue(' + titletext + ').svg', 'svg', save_path)
-        dP_plot.save_plot('Average response time cue(' + titletext + ').tif', 'tif', save_path)
+    def plot_psycho(self, save_path):
+        # for different stages, plot the average psychometric curve for adult and juvenile animal separately
+        # need to get last 3 sessions for all animals (suppose to be more stable
+        wholeSess = np.arange(len(self.trainSti))
+        sessionInd =[]
+        for aa in np.unique(self.beh_dict['animal']):
+            sess = np.array(wholeSess[np.logical_and([True if a==aa else False for a in self.beh_dict['animal']],
+                                            self.trainSti>=8)])
+            for s in sess[-5:]:
+                sessionInd.append(s)
+
+        tempL_fit = self.beh_dict['L-fit'][:,sessionInd]
+        tempPsycho_data = self.beh_dict['psycho_data'][:,sessionInd]
+        tempAnimal = [self.beh_dict['animal'][i] for i in sessionInd]
+
+        ADTInd = [i for i in range(len(tempAnimal)) if 'ADT' in tempAnimal[i]]
+        JUVInd = [i for i in range(len(tempAnimal)) if 'JUV' in tempAnimal[i]]
+
+        probeInd = [1, 3, 5, 7, 8, 10, 12, 14]
+        taskInd = [0, 2, 4, 6, 9, 11, 13, 15]
+
+
+        meanADTChoice = np.nanmean(tempPsycho_data[:,ADTInd],1)
+        steADTChoice = np.nanstd(tempPsycho_data[:,ADTInd],1)/np.sqrt(
+            np.count_nonzero(~np.isnan(tempPsycho_data[:,ADTInd]), axis=1))
+
+        meanJUVChoice = np.nanmean(tempPsycho_data[:,JUVInd],1)
+        steJUVChoice = np.nanstd(tempPsycho_data[:,JUVInd],1)/np.sqrt(
+            np.count_nonzero(~np.isnan(tempPsycho_data[:,JUVInd]), axis=1))
+
+        adtColor = (255 / 255, 189 / 255, 53 / 255)
+        juvColor = (63 / 255, 167 / 255, 150 / 255)
+
+        psycho_plot = StartPlots()
+        psycho_plot.ax.scatter(self.beh_dict['stiFreq'][taskInd],meanADTChoice[taskInd],
+                               marker='.', s = 100, c=adtColor,label='_nolegend_')
+        psycho_plot.ax.errorbar(self.beh_dict['stiFreq'][taskInd],meanADTChoice[taskInd],
+                    yerr=steADTChoice[taskInd], fmt='none', ecolor=adtColor,label='_nolegend_')
+        psycho_plot.ax.scatter(self.beh_dict['stiFreq'][probeInd], meanADTChoice[probeInd],
+                               marker='s', c=adtColor, label='_nolegend_')
+        psycho_plot.ax.errorbar(self.beh_dict['stiFreq'][probeInd], meanADTChoice[probeInd],
+                                yerr=steADTChoice[probeInd], fmt='none', ecolor=adtColor, label='_nolegend_')
+
+        psycho_plot.ax.scatter(self.beh_dict['stiFreq'][taskInd],meanJUVChoice[taskInd],
+                               marker='.', s = 100, c=juvColor, label='_nolegend_')
+        psycho_plot.ax.errorbar(self.beh_dict['stiFreq'][taskInd],meanJUVChoice[taskInd],
+                    yerr=steJUVChoice[taskInd], fmt='none', ecolor=juvColor, label='_nolegend_')
+        psycho_plot.ax.scatter(self.beh_dict['stiFreq'][probeInd], meanJUVChoice[probeInd],
+                               marker='s', c=juvColor, label='_nolegend_')
+        psycho_plot.ax.errorbar(self.beh_dict['stiFreq'][probeInd], meanJUVChoice[probeInd],
+                                yerr=steJUVChoice[probeInd], fmt='none', ecolor=juvColor, label='_nolegend_')
+
+        # run statistic analysis:
+        # t-test
+        pVal = np.zeros(tempPsycho_data.shape[0])
+        for i in range(tempPsycho_data.shape[0]):
+            _, pVal[i] = ttest_ind(tempPsycho_data[i,JUVInd], tempPsycho_data[i,ADTInd], nan_policy='omit')
+
+        # anova
+        cue_anova = []
+        age_anova = []
+        response_anova = []
+
+        # loop through every group
+        for t in range(tempPsycho_data.shape[1]):
+            for cue in range(tempPsycho_data.shape[0]):
+                if t in ADTInd:
+                    age_anova.append('ADT')
+                elif t in JUVInd:
+                    age_anova.append('JUV')
+                cue_anova.append(str(cue+1))
+                response_anova.append(tempPsycho_data[cue,t])
+
+        anova_data = pd.DataFrame({'age': age_anova,
+                                   'cue': cue_anova,
+                                   'response': response_anova
+                                   })
+        model = ols('response ~ age + cue + age:cue', anova_data).fit()
+        anova_table = sm.stats.anova_lm(model, typ=2)
+
+        # print ANOVA table
+        print(anova_table)
+
+        # plot significance
+        # for tt in range(tempPsycho_data.shape[0]):
+        #     if pVal[tt] < 0.05:
+        #         dP_plot.ax.plot(xAxis[tt] + 1 * np.array([-0.5, 0.5]), [4, 4],
+        #                         color=(1, 0, 0), linewidth=5)
+
+        # plot the fitted results
+        # bootstrap to get the mean parameter of the fitted result
+
+        # plot average choice curve and fitted curve
+        # plot average data with standard error and average fitted curve
+
+        fit_x = np.linspace(self.beh_dict['stiFreq'][0], self.beh_dict['stiFreq'][-1], 50)
+
+        midFreq = (self.beh_dict['stiFreq'][6] + self.beh_dict['stiFreq'][9])/2
+        x_1 = np.linspace(self.beh_dict['stiFreq'][0], self.beh_dict['stiFreq'][-1], 50)
+        x_1[fit_x>midFreq] = 0
+        x_2 = np.linspace(self.beh_dict['stiFreq'][0], self.beh_dict['stiFreq'][-1], 50)
+        x_2[fit_x<midFreq] = 0
+
+        x_model = np.array([np.ones(len(fit_x)),x_1,x_2])
+
+        X = np.dot(np.transpose(tempL_fit[:, ADTInd]), x_model)
+        logit_X = 1/(1+np.exp(-X))
+        L_ADT = bootstrap(np.transpose(logit_X), 1, 3, 1000)
+
+        X = np.dot(np.transpose(tempL_fit[:, JUVInd]), x_model)
+        logit_X = 1/(1+np.exp(-X))
+        L_JUV = bootstrap(np.transpose(logit_X), 1, 3, 1000)
+
+        # plot the fitted curve
+        X = L_ADT['bootAve']
+        psycho_plot.ax.plot(fit_x, L_ADT['bootAve'], color=adtColor, label='Adult')
+        psycho_plot.ax.fill_between(fit_x, L_ADT['bootLow'],
+                                L_ADT['bootHigh'], color=adtColor, alpha=0.2, label='_nolegend_')
+
+        psycho_plot.ax.plot(fit_x, L_JUV['bootAve'], color=juvColor, label='Juvenile')
+        psycho_plot.ax.fill_between(fit_x, L_JUV['bootLow'],
+                                L_JUV['bootHigh'], color=juvColor, alpha=0.2, label='_nolegend_')
+
+        psycho_plot.legend(['Adult', 'Juvenile'])
+        psycho_plot.ax.set_xlabel('Stimulus frequency')
+        psycho_plot.ax.set_ylabel('Response rate')
+        psycho_plot.ax.plot()
+
+        psycho_plot.save_plot('Average psychometric.svg', 'svg', save_path)
+        psycho_plot.save_plot('Average psychometric.tif', 'tif', save_path)
 
     def get_meanste(self, data):
         """
@@ -1472,7 +1752,12 @@ if __name__ == "__main__":
 
     savefigpath = os.path.join(root_dir,'summary','behavior')
     # beh_sum.plot_dP(savefigpath)
-    beh_sum.plot_rt([1,2,3,4,5,6,7,8],savefigpath)
-
+    #beh_sum.plot_rt([1,2,3,4,5,6,7,8],savefigpath)
+    #beh_sum.plot_rt([1, 8], savefigpath)
+    #beh_sum.plot_rt([2,7], savefigpath)
+    #beh_sum.plot_rt([3, 6], savefigpath)
+    #beh_sum.plot_rt([4, 5], savefigpath)
+    beh_sum.plot_rt([9,10,11,12,13,14,15,16], savefigpath)
+    #beh_sum.plot_psycho(savefigpath)
     matplotlib.use('QtAgg')
     x=1
