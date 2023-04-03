@@ -17,6 +17,7 @@ from scipy.optimize import minimize
 from scipy.stats import norm, ttest_ind
 import statsmodels.api as sm
 from statsmodels.formula.api import ols
+import time
 from statsmodels.stats.multicomp import MultiComparison
 
 
@@ -1020,12 +1021,13 @@ class GoNogoBehaviorSum:
         # go through every animal, align the behavior with number of sounds introduced
 
         # start with two sound stimulus first
+        #time.sleep(1)
         stiNumList = [1, 2, 4, 6, 8]
         tStep = 50 # calculate the d-prime in block of 50 trials
-        runningdPrime = dict()
+        runningdPrime = {}#dict()
 
         for ss in range(len(stiNumList) - 1):
-            runningdPrime[str(stiNumList[ss+1])] = dict()
+            runningdPrime[str(stiNumList[ss+1])] = {}#dict()
             for aa in self.animalList:
 
                 tempInd = np.logical_and(self.concateChoice[aa]['numSound'] > stiNumList[ss], self.concateChoice[aa]['numSound'] <= stiNumList[ss+1])
@@ -1037,7 +1039,8 @@ class GoNogoBehaviorSum:
                 if nBlocks == 1:  # if less than 50 trials
                     Hit_rate = np.sum(tempChoice == 2) / np.sum(np.logical_or(tempChoice == 2,tempChoice == -2))
                     FA_rate = np.sum(tempChoice == -1) / np.sum(np.logical_or(tempChoice == 0,tempChoice == -1))
-                    runningdPrime[str(stiNumList[ss+1])][aa] = norm.ppf(self.check_rate(Hit_rate)) - norm.ppf(self.check_rate(FA_rate))
+                    runningdPrime[str(stiNumList[ss+1])][aa].append(norm.ppf(self.check_rate(Hit_rate))
+                                                                    - norm.ppf(self.check_rate(FA_rate)))
                 else:
                     for bb in range(nBlocks):
                         startT = bb*tStep
@@ -1058,7 +1061,9 @@ class GoNogoBehaviorSum:
         # reorganize the data into dataframe
         # iterate through every stage (number of stimulus)
         dPrimeMat_start = {} # aligned to the start of adding sound stimulus
-        dPrimeMat_end = {}   # alinged to the end of adding sound stimulus
+        dPrimeMat_end = {}   # aligned to the end of adding sound stimulus
+
+
         for key in runningdPrime.keys():
             max_length = max(len(v) for v in runningdPrime[key].values())
             arr_1 = np.empty((max_length, len(runningdPrime[key])), dtype=float)
@@ -1744,14 +1749,14 @@ if __name__ == "__main__":
     # # x.lick_rate()
     # #x.ITI_distribution()
     # x.running_aligned('onset')
-    root_dir = r'X:\HongliWang\Madeline'
+    root_dir = r'Z:\HongliWang\Madeline'
     beh_sum = GoNogoBehaviorSum(root_dir)
     #matplotlib.use('Agg')
     #beh_sum.process_singleSession(ifrun=True)
     beh_sum.read_data()
 
     savefigpath = os.path.join(root_dir,'summary','behavior')
-    # beh_sum.plot_dP(savefigpath)
+    beh_sum.plot_dP(savefigpath)
     #beh_sum.plot_rt([1,2,3,4,5,6,7,8],savefigpath)
     #beh_sum.plot_rt([1, 8], savefigpath)
     #beh_sum.plot_rt([2,7], savefigpath)

@@ -19,7 +19,7 @@ class fluoAnalysis:
         self.fluo = pd.read_csv(fluo_file)
 
     def align_fluo_beh(self):
-        # align the fluoresent data to behavior based on trials
+        # align the fluorescent data to behavior based on trials
         # interpolate fluorescent data and running speed
         nTrials = self.beh.shape[0]
         nCells = self.fluo.shape[1] - 2 # exclude the first column (index) and last column (time)
