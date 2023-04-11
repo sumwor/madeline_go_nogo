@@ -149,7 +149,7 @@ def robust_filter(ys, method=12, window=200, optimize_window=2, buffer=False):
 
 if __name__ == "__main__":
     #input_folder = r"Z:\Madeline\processed_data\JUV015\220409\suite2p"
-    input_folder = r"X:\Madeline\processed_data\JUV015\220409\suite2p"
+    input_folder = r"C:\Users\linda\Documents\GitHub\madeline_go_nogo\data\suite2p_output"
     gn_series = Suite2pSeries(input_folder)
     animal, session = 'JUV011', '211215'
     # dff_df = gn_series.calculate_dff(melt=False)

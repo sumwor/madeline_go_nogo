@@ -6,7 +6,16 @@ import warnings
 warnings.filterwarnings("ignore")
 
 
-def bootstrap(data, dim, dim0, n_sample):
+def bootstrap(data, dim, dim0, n_sample=1000):
+    """
+    input:
+    data: data matrix for bootstrap
+    dim: the dimension for bootstrap, should be data.shape[1]
+    dim0: the dimension untouched, shoud be data.shape[0]
+    n_sample: number of samples for bootstrap. default: 1000
+    output:
+    bootRes={'bootAve','bootHigh','bootLow'}
+    """
     # Resample the rows of the matrix with replacement
     if len(data)>0:  # if input data is not empty
         bootstrap_indices = np.random.choice(data.shape[dim], size=(n_sample, data.shape[dim]), replace=True)
