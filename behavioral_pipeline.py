@@ -383,61 +383,15 @@ class GoNogoBehaviorMat(BehaviorMat):
             cut_plot.ax.scatter(self.cutoff, runningHitRate[self.cutoff], s= 80, c='red')
         cut_plot.save_plot('Cut point.png', 'png', save_path)
 
-        # cut criterion, reference Wang,2022
-        # 1. trials larger than 200 (insure long enough sessions)
-        # 2. running-d-prime lower than 1, did not come back for long enough
-        # 3. hit rate should be larger than some threshold (0.8?), since sometimes
-        #    the d-prime recovered due to a lack of response in general (lower
-        #    false alarm rate)
+        # save the result
+        if self.ifCut:
+            self.DFFull = self.DF
+            self.DF = self.DF.iloc[0:self.cutoff]
+            self.trialNFull = self.trialN
+            self.trialN = self.cutoff
 
-        # find the trial when d-prime drop below 1 and hit rate drop below 0.8
-        # which ever comes first
-        # dThresh = 1
-        # #
-        # minLength = 150 # need at least 150 trials
-        # # find the index of first elements in runningDprime that is below dThresh
-        # # trialCut = min(np.where(runningDprime<dThresh)[0][0], np.where(runningHitRate<hitThresh)[0][0])
-        #
-        # # change point detection for hit rate (when a sudden drop is detected)
-        #
-        # crossPoint = []
-        # isDrop = [] # 1 if the cross point is dropping below threshold, 0 if it is increasing
-        # isSmaller = runningDprime<dThresh
-        # if np.sum(isSmaller) > 0:
-        #     # go through every trial to look for cross point
-        #     for tt in range(len(isSmaller)-1):
-        #         if isSmaller[tt+1] != isSmaller[tt]:
-        #             crossPoint.append(tt)
-        #             if isSmaller[tt]:
-        #                 isDrop.append(0)
-        #             else:
-        #                 isDrop.append(1)
-        #     # loop through the crosspoint to look for cut points
-        #     # find the first crosspoint
-        #     for i,e in (enumerate(isDrop)):
-        #         if e == 1:
-        #             firstDrop = i
-        #             firstDropTrial = crossPoint[i]
-        #             break
-        #
-        #     # start at first drop, chech the average hit rate between drop to next increase
-        #
-        #
-        #
-        # else:
-        #     self.trialCut = 0
-        #     self.ifCut = False
-        #
-        #     self.trialCut = np.where(runningDprime<dThresh)[0][0]
-        #     if self.trialCut < minLength:
-        #         self.ifCut = False
-        #     else:
-        #         self.ifCut = True
-        #         self.fullDF = self.DF
-        #         self.DF = self.fullDF.iloc[:self.trialCut]
-        #         self.trialN = self.trialCut
-        #
-        #
+        self.saveData['ifCut'] = self.ifCut
+        self.saveData['cutoff'] = self.cutoff
 
     def output_df(self, outfile, file_type='csv'):
         """
@@ -455,31 +409,38 @@ class GoNogoBehaviorMat(BehaviorMat):
         plotname = os.path.join(save_path,'Behavior summary.svg')
         if not os.path.exists(plotname) or ifrun:
             # plot the outcome according to trials
-            trialNum = np.arange(self.trialN)
+
 
             beh_plots = StartPlots()
             # hit trials
-            beh_plots.ax.scatter(trialNum[self.DF.trialType == 2], np.array(self.DF.trialType[self.DF.trialType == 2]),
+            if self.ifCut:
+                behDF = self.DFFull
+                trialNum = np.arange(self.trialNFull)
+            else:
+                behDF = self.DF
+                trialNum = np.arange(self.trialN)
+
+            beh_plots.ax.scatter(trialNum[behDF.trialType == 2], np.array(behDF.trialType[behDF.trialType == 2]),
                        s=100, marker='o')
 
             # miss trials
-            beh_plots.ax.scatter(trialNum[self.DF.trialType == -2], self.DF.trialType[self.DF.trialType == -2], s=100,
+            beh_plots.ax.scatter(trialNum[behDF.trialType == -2], behDF.trialType[behDF.trialType == -2], s=100,
                        marker='x')
 
             # false alarm
-            beh_plots.ax.scatter(trialNum[self.DF.trialType == -1], self.DF.trialType[self.DF.trialType == -1], s=100,
+            beh_plots.ax.scatter(trialNum[behDF.trialType == -1], behDF.trialType[behDF.trialType == -1], s=100,
                        marker='*')
 
             # correct rejection
-            beh_plots.ax.scatter(trialNum[self.DF.trialType == 0], self.DF.trialType[self.DF.trialType == 0], s=100,
+            beh_plots.ax.scatter(trialNum[behDF.trialType == 0], behDF.trialType[behDF.trialType == 0], s=100,
                        marker='.')
 
             # probe lick
-            beh_plots.ax.scatter(trialNum[self.DF.trialType == -3], self.DF.trialType[self.DF.trialType == -3], s=100,
+            beh_plots.ax.scatter(trialNum[behDF.trialType == -3], behDF.trialType[behDF.trialType == -3], s=100,
                        marker='v')
 
             # probe no lick
-            beh_plots.ax.scatter(trialNum[self.DF.trialType == -4], self.DF.trialType[self.DF.trialType == -4], s=100,
+            beh_plots.ax.scatter(trialNum[behDF.trialType == -4], behDF.trialType[behDF.trialType == -4], s=100,
                        marker='^')
 
             #ax.spines['top'].set_visible(False)
@@ -842,6 +803,7 @@ class GoNogoBehaviorMat(BehaviorMat):
             #
             # plt.subplots_adjust(top=0.85)
             # plt.show()
+
 
     def running_aligned(self, aligned_to, save_path, ifrun):
         """
