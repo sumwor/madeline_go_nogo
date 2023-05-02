@@ -14,6 +14,7 @@ from behavioral_pipeline import BehaviorMat, GoNogoBehaviorMat
 import os
 from utils_signal import *
 
+from packages.decodanda_master.decodanda import Decodanda
 # read df/f and behavior data, create a class with behavior and df/f data
 class Suite2pSeries:
 
@@ -532,7 +533,65 @@ class fluoAnalysis:
 
         return coeff, pval, rSquare
 
-# define the function for parallel computing
+    def decoding(self, signal, decodeVar, trialMask, classifier, regr_time):
+        """
+        function to decode behavior from neural activity
+        running speed/reward/action/stimulus
+        signal: neural signal. n x T
+        var: variable to be decoded
+        trialMask: trials to consider with specified conditions (Hit/FA etc.)
+        """
+
+        # run decoding for every time bin
+        trialInd = np.arange(signal.shape[1])
+        nullRepeats = 20
+        decode_perform = {}
+        decode_perform['action'] = np.zeros(len(regr_time))
+        decode_null = {}
+        decode_null['action'] = np.zeros((len(regr_time), nullRepeats))
+
+        n_jobs = -1
+
+        # Parallelize the loop over `trial`
+        results = Parallel(n_jobs=n_jobs, backend='multiprocessing')(
+            delayed(self.run_decoder)(
+            signal, decodeVar, trialMask, trialInd,
+                idx, nullRepeats, classifier) for idx in
+            tqdm(range(len(regr_time))))
+
+        for tt in range(len(regr_time)):
+            decode_perform['action'][tt], decode_null['action'][tt,:] = results[tt]
+
+    # define the function for parallel computing
+    def run_decoder(self, signal, decodeVar, trialMask, trialInd, idx, nullRepeats, classifier):
+        # function for parallel computing
+
+        data = {
+            'raster': signal[:, trialMask, idx].transpose(),
+            'action': decodeVar['action'][trialMask],
+            #'outcome':decodeVar['outcome'][:,idx][trialMask],
+            'stimulus':decodeVar['stimulus'][:,idx][trialMask],
+            'trial': trialInd[trialMask],
+        }
+
+        conditions = {
+            'action': [1, 0],
+            'outcome': [1,0,-1],
+            #'stimulus':np.unique(decodeVar['stimulus']),  # this should be stimulus tested in the session
+        }
+
+        dec = Decodanda(
+            data=data,
+            conditions=conditions,
+            classifier='RandomForest'
+        )
+
+        performance, null = dec.decode(
+            training_fraction=0.5,  # fraction of trials used for training
+            cross_validations=10,  # number of cross validation folds
+            nshuffles=nullRepeats)
+
+        return performance['action'], null['action']
 
 if __name__ == "__main__":
     animal, session = 'JUV015', '220409'
@@ -557,9 +616,9 @@ if __name__ == "__main__":
 
     # dff_df = gn_series.calculate_dff(melt=False)
 
-    # beh_file = r'C:\Users\linda\Documents\GitHub\madeline_go_nogo\data\JUV015_220409_behavior_output.csv'
-    # beh_data = pd.read_csv(beh_file)
-    beh_data = trialbytrial.to_df()
+    beh_file = r'C:\Users\linda\Documents\GitHub\madeline_go_nogo\data\JUV015_220409_behavior_output.csv'
+    beh_data = pd.read_csv(beh_file)
+    #beh_data = trialbytrial.to_df()
     fluo_data = pd.read_csv(fluo_file)
 
     # build the linear regression model
@@ -576,6 +635,19 @@ if __name__ == "__main__":
     # arrange the independent variables
 
     X, y, regr_time = analysis.linear_model()
+
+    # for decoding
+    # decode for action/outcome/stimulus
+    decodeVar = {}
+    decodeVar['action'] = X[2,:,0]
+    decodeVar['outcome'] = X[5,:,0]
+    decodeVar['stimulus'] = X[0,:,0]
+    decodeSig = y
+    trialMask = np.ones(decodeSig.shape[1])
+    trialMask = trialMask.astype(bool)
+
+    classifier = "RandomForest"
+    analysis.decoding(decodeSig, decodeVar, trialMask, classifier, regr_time)
 
     MLRResult = analysis.linear_regr(X[:,1:-2,:], y[:,1:-2,:], regr_time)
 

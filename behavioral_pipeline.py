@@ -281,8 +281,7 @@ class GoNogoBehaviorMat(BehaviorMat):
 
         # save the data into self
         self.DF = result_df
-
-        self.saveData['behDF'] = result_df
+        self.saveData['behFull'] = result_df
 
         return result_df
 
@@ -392,7 +391,7 @@ class GoNogoBehaviorMat(BehaviorMat):
 
         self.saveData['ifCut'] = self.ifCut
         self.saveData['cutoff'] = self.cutoff
-
+        self.saveData['behDF'] = self.DF
     def output_df(self, outfile, file_type='csv'):
         """
         saves the output of to_df() as a file of the specified type
@@ -1069,7 +1068,7 @@ class GoNogoBehaviorSum:
                 self.concateChoice[aa]['trialType'] = np.append(self.concateChoice[aa]['trialType'] ,
                                                              np.array(my_data['behDF']['trialType'].values))
                 self.concateChoice[aa]['respT'] = np.append(self.concateChoice[aa]['respT'] ,
-                                                             my_data['rtbyTrial'])
+                                                              my_data['rtbyTrial'])
                 tempInd = tempInd + 1
 
             # once we have the complete sequence of stimulus presented, determine when a new stiumulus is first introduced
@@ -1110,7 +1109,7 @@ class GoNogoBehaviorSum:
 
            # initialize the summary dictionary if it is the first file
             for key in my_data.keys():
-                if not key in ['behDF', 'rtbyTrial', 'psycho-sti'] and not 'run' in key:
+                if not key in ['behFull', 'behDF', 'rtbyTrial', 'psycho-sti'] and not 'run' in key:
                     # ignore the run_aligned for now, until coming up with how to summarize it
 
                     if isinstance(my_data[key], np.ndarray):
@@ -1863,13 +1862,13 @@ class GoNogoBehaviorSum:
 
 if __name__ == "__main__":
     # test single session
-    # animal = 'ADT008'
-    # session = '220417'
-    # input_path = r'Z:\HongliWang\Madeline\processed_behavior\ADT008\ADT008-220417-behaviorLOG.mat'
-    # x = GoNogoBehaviorMat(animal, session, input_path)
-    # x.to_df()
+    animal = 'ADT009'
+    session = '220409'
+    input_path = r'Z:\HongliWang\Madeline\processed_behavior\ADT009\ADT009-220409-behaviorLOG.mat'
+    x = GoNogoBehaviorMat(animal, session, input_path)
+    x.to_df()
     #
-    # output_path = r'Z:\HongliWang\Madeline\analysis\behavior\ADT008\220407'
+    output_path = r'Z:\HongliWang\Madeline\analysis\behavior\ADT008\220407'
     # plot_path = os.path.join(output_path, 'beh_plot')
     # x.beh_cut(plot_path)
     #
@@ -1891,8 +1890,8 @@ if __name__ == "__main__":
     # x.running_aligned('onset')
     root_dir = r'Z:\HongliWang\Madeline'
     beh_sum = GoNogoBehaviorSum(root_dir)
-    matplotlib.use('Agg')
-    beh_sum.process_singleSession(ifrun=True)
+    #matplotlib.use('Agg')
+    #beh_sum.process_singleSession(ifrun=True)
     beh_sum.read_data()
 
     matplotlib.use('QtAgg')
