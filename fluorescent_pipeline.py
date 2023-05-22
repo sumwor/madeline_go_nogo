@@ -375,8 +375,6 @@ class fluoAnalysis:
                                                  color=(0.7, 0.7, 0.7))
         r2Plot.ax.set_title('R-square')
         plt.show()
-    def saveMLRResult(self, MLRResult):
-        pass
 
     def run_MLR(self, x, y):
         # running individual MLR for parallel computing

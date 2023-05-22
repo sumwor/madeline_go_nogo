@@ -8,7 +8,7 @@ animals_to_process = (dir(selpath)); % Once you select your folder it appears as
 
 for animal = 4:length(animals_to_process) % for each animal
     animal_folder = animals_to_process(animal).name; 
-    current_animal = strcat(selpath,'/',animal_folder);
+    current_animal = fullfile(selpath,animal_folder);
     [performance, lick_behavior, info] = get_behavior(current_animal);
     behavior_struct.(animal_folder).dprimes = performance;
     behavior_struct.(animal_folder).licks = lick_behavior;
