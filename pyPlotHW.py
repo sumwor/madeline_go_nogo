@@ -6,6 +6,8 @@ import os
 import matplotlib
 
 class StartPlots:
+    # set figure size
+    plt.rcParams['figure_figsize'] = [20, 20]
     # set font
     plt.rcParams["font.family"] = "Arial"
     plt.rcParams["font.size"] = 20

@@ -268,7 +268,7 @@ class GoNogoBehaviorMat(BehaviorMat):
             if result_df.sound_num[tt] in [9, 10, 11, 12, 13, 14, 15, 16]:
                 result_df.at[tt, 'reward'] = 0
             elif result_df.sound_num[tt] in [1, 2, 3, 4]:
-                result_df.at[tt, 'reward'] = -1 if result_df.at[tt, 'licks_out']==0 else -1
+                result_df.at[tt, 'reward'] = -1 if result_df.at[tt, 'licks_out']==0 else 1
             elif result_df.sound_num[tt] in [5, 6, 7, 8]:
                 result_df.at[tt, 'reward'] = 0 if result_df.at[tt, 'licks_out']==0 else -1
 
@@ -1703,7 +1703,6 @@ class GoNogoBehaviorSum:
         mc = pairwise_tukeyhsd(anova_data['respT'], anova_data['age'] + anova_data['response'])
         print(mc)
 
-
     def plot_psycho(self, save_path):
         # for different stages, plot the average psychometric curve for adult and juvenile animal separately
         # need to get last 3 sessions for all animals (suppose to be more stable
@@ -1862,36 +1861,30 @@ class GoNogoBehaviorSum:
 
 if __name__ == "__main__":
     # test single session
-    animal = 'ADT009'
+    animal = 'JUV015'
     session = '220409'
-    input_path = r'Z:\HongliWang\Madeline\processed_behavior\ADT009\ADT009-220409-behaviorLOG.mat'
+    input_path = r'Z:\HongliWang\Madeline\processed_behavior\JUV015\JUV015-220409-behaviorLOG.mat'
     x = GoNogoBehaviorMat(animal, session, input_path)
     x.to_df()
     #
-    output_path = r'Z:\HongliWang\Madeline\analysis\behavior\ADT008\220407'
-    # plot_path = os.path.join(output_path, 'beh_plot')
-    # x.beh_cut(plot_path)
-    #
-    #
-    #
-    # ifrun = True
-    # x.beh_session(plot_path, ifrun)
-    # x.psycho_curve(plot_path, ifrun)
-    # x.response_time(plot_path, ifrun)
-    # x.lick_rate(plot_path, ifrun)
-    # x.ITI_distribution(plot_path, ifrun)
-    # x.running_aligned('onset',plot_path, ifrun)
+    output_path = r'Z:\HongliWang\Madeline\analysis\behavior\JUV015\220409'
+    plot_path = os.path.join(output_path, 'beh_plot')
+    x.beh_cut(plot_path)
+
+    ifrun = True
+    x.beh_session(plot_path, ifrun)
+    x.psycho_curve(plot_path, ifrun)
+    x.response_time(plot_path, ifrun)
+    x.lick_rate(plot_path, ifrun)
+    x.ITI_distribution(plot_path, ifrun)
+    x.running_aligned('onset',plot_path, ifrun)
     # # test code for plot
     #
-    # # x.psycho_curve()
-    # #x.response_time()
-    # # x.lick_rate()
-    # #x.ITI_distribution()
-    # x.running_aligned('onset')
+    x.save_analysis(output_path,ifrun)
     root_dir = r'Z:\HongliWang\Madeline'
     beh_sum = GoNogoBehaviorSum(root_dir)
-    #matplotlib.use('Agg')
-    #beh_sum.process_singleSession(ifrun=True)
+    # matplotlib.use('Agg')
+    # beh_sum.process_singleSession(ifrun=True)
     beh_sum.read_data()
 
     matplotlib.use('QtAgg')

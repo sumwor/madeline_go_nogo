@@ -8,13 +8,28 @@ import statsmodels.api as sm
 from pyPlotHW import *
 from utility_HW import bootstrap
 import matplotlib.pyplot as plt
+import matplotlib.patches as mpatches
 import matplotlib
 from scipy.stats import binomtest
 from behavioral_pipeline import BehaviorMat, GoNogoBehaviorMat
 import os
 from utils_signal import *
-
+import pickle
 from packages.decodanda_master.decodanda import Decodanda
+
+from scipy.stats import wilcoxon
+from sklearn.ensemble import RandomForestClassifier as RFC
+from sklearn.svm import SVC
+from sklearn.model_selection import RandomizedSearchCV
+from sklearn.model_selection import cross_val_score
+from sklearn.metrics import classification_report, confusion_matrix
+from sklearn.model_selection import train_test_split
+import warnings
+import random
+
+import matlab.engine
+
+warnings.filterwarnings("ignore")
 # read df/f and behavior data, create a class with behavior and df/f data
 class Suite2pSeries:
 
@@ -153,7 +168,15 @@ def robust_filter(ys, method=12, window=200, optimize_window=2, buffer=False):
 class fluoAnalysis:
 
     def __init__(self, beh_file, fluo_file):
-        self.beh = pd.read_csv(beh_file)
+        # check file type
+        if beh_file.partition('.')[2] == 'csv':
+            self.beh = pd.read_csv(beh_file)
+        elif beh_file.partition('.')[2] == 'pickle':
+            with open(beh_file, 'rb') as pf:
+                # Load the data from the pickle file
+                beh_data = pickle.load(pf)
+                pf.close()
+            self.beh = beh_data['behDF']
         self.fluo = pd.read_csv(fluo_file)
 
     def align_fluo_beh(self):
@@ -173,9 +196,11 @@ class fluoAnalysis:
 
             # align speed
             speed = self.beh['running_speed'][tt]
-            speed = np.array(eval(speed))
+            #speed = np.array(eval(speed))
+            speed = np.array(speed)
             speed_time = self.beh['running_time'][tt]
-            speed_time = np.array(eval(speed_time))
+            #speed_time = np.array(eval(speed_time))
+            speed_time = np.array(speed_time)
             if speed.size != 0:
                 t = speed_time - self.beh['onset'][tt]
                 y = speed
@@ -355,29 +380,42 @@ class fluoAnalysis:
 
     def process_X(self, regr_time, choiceList, rewardList, nTrials, nCells, trial):
         # re-arrange the behavior and dFF data for linear regression
-        X = np.zeros((11,len(regr_time)))
+        X = np.zeros((13,len(regr_time)))
         #
         Y = np.zeros((nCells, len(regr_time)))
 
         # need to determine whether to use exact frequency or go/no go/probe
-        X[0, :] = np.ones(len(regr_time)) * self.beh['sound_num'][trial]
+        # separate into go/no go trials (for probe trials: 9-12: go; 13-16 no go
+        # previous + next stimulus
+        go_stim = [1,2,3,4,9,10,11,12]
+        nogo_stim = [5,6,7,8,13,14,15,16]
+
+        X[1, :] = np.ones(len(regr_time)) * [1 if self.beh['sound_num'][trial] in go_stim else 0]
+        if trial == 0:
+            X[2,:] = np.ones(len(regr_time)) * np.nan
+        else:
+            X[2, :] = np.ones(len(regr_time)) * [1 if self.beh['sound_num'][trial-1] in go_stim else 0]
+        if trial == nTrials-1:
+            X[0, :] = np.ones(len(regr_time)) * np.nan
+        else:
+            X[0, :] = np.ones(len(regr_time)) * [1 if self.beh['sound_num'][trial+1] in go_stim else 0]
 
         # choice: lick = 1; no lick = -1
-        X[1, :] = np.ones(len(regr_time)) * (
+        X[3, :] = np.ones(len(regr_time)) * (
             choiceList[trial + 1] if trial < nTrials - 1 else np.nan)
-        X[2, :] = np.ones(len(regr_time)) * (choiceList[trial])
-        X[3, :] = np.ones(len(regr_time)) * (choiceList[trial - 1] if trial > 0 else np.nan)
+        X[4, :] = np.ones(len(regr_time)) * (choiceList[trial])
+        X[5, :] = np.ones(len(regr_time)) * (choiceList[trial - 1] if trial > 0 else np.nan)
 
         # reward
-        X[4, :] = np.ones(len(regr_time)) * (
+        X[6, :] = np.ones(len(regr_time)) * (
             rewardList[trial + 1] if trial < nTrials - 1 else np.nan)
-        X[5, :] = np.ones(len(regr_time)) * rewardList[trial]
-        X[6, :] = np.ones(len(regr_time)) * (rewardList[trial - 1] if trial > 0 else np.nan)
+        X[7, :] = np.ones(len(regr_time)) * rewardList[trial]
+        X[8, :] = np.ones(len(regr_time)) * (rewardList[trial - 1] if trial > 0 else np.nan)
 
         # interaction
-        X[7, :] = X[1, :] * X[4, :]
-        X[8, :] = X[2, :] * X[5, :]
         X[9, :] = X[3, :] * X[6, :]
+        X[10, :] = X[4, :] * X[7, :]
+        X[11, :] = X[5, :] * X[8, :]
 
         # running speed
         tStep = np.nanmean(np.diff(regr_time))
@@ -386,7 +424,7 @@ class fluoAnalysis:
             t_start = regr_time[tt] - tStep / 2
             t_end = regr_time[tt] + tStep / 2
             temp_run = self.run_aligned[:, trial]
-            X[10, tt] = np.nanmean(
+            X[12, tt] = np.nanmean(
                 temp_run[np.logical_and(self.interpT > t_start, self.interpT <= t_end)])
 
             # dependent variable: dFF
@@ -397,18 +435,18 @@ class fluoAnalysis:
 
         return X, Y
 
-    def linear_model(self):
+    def linear_model(self, n_predictors):
         # arrange the independent variables and dependent variables for later linear regression
         # model:
         # y = b0 + b1*cue + b2* cn+1 + b3* cn + b4* cn-1 + b5* rn+1 + b6*rn + b7*rn-1 + b8* cn+1*rn+1 + b9* cn*rn + b10* cn-1*rn-1 + b11* running_speed
 
         tStart = -2.95
-        tEnd = 7.95
+        tEnd = 4.95
         tStep = 0.1
         regr_time = np.arange(tStart, tEnd, tStep)
         nTrials = self.beh.shape[0]
         nCells = self.fluo.shape[1]-2
-        independent_X = np.zeros((11, nTrials, len(regr_time)))
+        independent_X = np.zeros((n_predictors, nTrials, len(regr_time)))
         dFF_Y = np.zeros((nCells, nTrials, len(regr_time)))
 
         choiceList = [1 if lick > 0 else 0 for lick in self.beh['licks_out']]
@@ -450,7 +488,8 @@ class fluoAnalysis:
         # reference: https://stats.stackexchange.com/questions/319296/model-for-regression-when-independent-variable-is-auto-correlated
         # fit the regression model
         nCells = self.fluo.shape[1] - 2
-        MLRResult = {'coeff': np.zeros((11, len(regr_time), nCells)), 'pval': np.zeros((11, len(regr_time), nCells)), 'r2': np.zeros((len(regr_time), nCells))}
+        n_predictors = X.shape[0]
+        MLRResult = {'coeff': np.zeros((n_predictors, len(regr_time), nCells)), 'pval': np.zeros((n_predictors, len(regr_time), nCells)), 'r2': np.zeros((len(regr_time), nCells))}
 
         n_jobs = -1
 
@@ -465,24 +504,34 @@ class fluoAnalysis:
         MLRResult['regr_time'] = regr_time
         return MLRResult
 
-    def plotMLRResult(self, MLRResult):
+    def plotMLRResult(self, MLRResult, labels, saveFigPath):
         # get the average coefficient plot and fraction of significant neurons
-        varList = ['Cue', 'Cn+1', 'Cn', 'Cn-1','Rn+1','Rn', 'Rn-1','Xn+1','Xn','Xn-1','Run']
+        varList =labels
         # average coefficient
         nPredictors = MLRResult['coeff'].shape[0]
 
-        coeffPlot = StartSubplots(3,4, ifSharey=True)
+        coeffPlot = StartSubplots(4,4, ifSharey=True)
 
+        maxY = 0
+        minY = 0
         for n in range(nPredictors):
             tempBoot = bootstrap(MLRResult['coeff'][n,:,:],1, 1000)
+            tempMax = max(tempBoot['bootHigh'])
+            tempMin = min(tempBoot['bootLow'])
+            if tempMax > maxY:
+                maxY = tempMax
+            if tempMin < minY:
+                minY = tempMin
             coeffPlot.ax[n//4, n%4].plot(MLRResult['regr_time'], tempBoot['bootAve'], c =(0,0,0))
             coeffPlot.ax[n // 4, n % 4].fill_between(MLRResult['regr_time'], tempBoot['bootLow'], tempBoot['bootHigh'],
                                           alpha=0.2,  color = (0.7,0.7,0.7))
             coeffPlot.ax[n//4, n%4].set_title(varList[n])
+        plt.ylim((minY,maxY))
         plt.show()
+        coeffPlot.save_plot('Average coefficient.tif','tiff', saveFigPath)
 
         # fraction of significant neurons
-        sigPlot = StartSubplots(3, 4, ifSharey=True)
+        sigPlot = StartSubplots(4, 4, ifSharey=True)
         pThresh = 0.001
         nCell = MLRResult['coeff'].shape[2]
 
@@ -503,8 +552,9 @@ class fluoAnalysis:
             for tt in range(len(MLRResult['regr_time'])):
                 if pResults[tt]<0.05:
                     sigPlot.ax[n//4, n%4].plot(MLRResult['regr_time'][tt]+dt*np.array([-0.5,0.5]), [0.5,0.5],color=(255/255, 189/255, 53/255), linewidth = 5)
-
+        plt.ylim((0,0.6))
         plt.show()
+        sigPlot.save_plot('Fraction of significant neurons.tif', 'tiff', saveFigPath)
 
         # plot r-square
         r2Boot = bootstrap(MLRResult['r2'], 1, 1000)
@@ -513,15 +563,18 @@ class fluoAnalysis:
         r2Plot.ax.fill_between(MLRResult['regr_time'], r2Boot['bootLow'], r2Boot['bootHigh'],
                                                  color=(0.7, 0.7, 0.7))
         r2Plot.ax.set_title('R-square')
-        plt.show()
+        r2Plot.save_plot('R-square.tif', 'tiff', saveFigPath)
+
+
     def saveMLRResult(self, MLRResult):
         pass
 
     def run_MLR(self, x, y):
         # running individual MLR for parallel computing
         nCells = y.shape[0]
-        coeff = np.zeros((11, nCells))
-        pval = np.zeros((11, nCells))
+        n_predictors = x.shape[0]
+        coeff = np.zeros((n_predictors, nCells))
+        pval = np.zeros((n_predictors, nCells))
         rSquare = np.zeros((nCells))
 
         x = sm.add_constant(np.transpose(x))
@@ -533,7 +586,7 @@ class fluoAnalysis:
 
         return coeff, pval, rSquare
 
-    def decoding(self, signal, decodeVar, trialMask, classifier, regr_time):
+    def decoding_old(self, signal, decodeVar, varList, trialMask, classifier, regr_time):
         """
         function to decode behavior from neural activity
         running speed/reward/action/stimulus
@@ -546,44 +599,63 @@ class fluoAnalysis:
         trialInd = np.arange(signal.shape[1])
         nullRepeats = 20
         decode_perform = {}
-        decode_perform['action'] = np.zeros(len(regr_time))
+        #decode_perform['action'] = np.zeros(len(regr_time))
+        #decode_perform['stimulus'] = np.zeros(len(regr_time))
         decode_null = {}
-        decode_null['action'] = np.zeros((len(regr_time), nullRepeats))
+        #decode_null['action'] = np.zeros((len(regr_time), nullRepeats))
+        #decode_null['stimulus'] = np.zeros((len(regr_time), nullRepeats))
 
-        n_jobs = -1
+        for varname in varList:
+            decode_perform[varname] =  np.zeros(len(regr_time))
+            decode_null[varname] = np.zeros((len(regr_time), nullRepeats))
+            n_jobs = -1
 
         # Parallelize the loop over `trial`
-        results = Parallel(n_jobs=n_jobs, backend='multiprocessing')(
-            delayed(self.run_decoder)(
-            signal, decodeVar, trialMask, trialInd,
-                idx, nullRepeats, classifier) for idx in
-            tqdm(range(len(regr_time))))
+            results = Parallel(n_jobs=n_jobs, backend='multiprocessing')(
+                delayed(self.run_decoder)(
+                    signal, decodeVar,varname,trialInd,trialMask,
+                    nullRepeats, classifier, idx) for idx in
+                    tqdm(range(len(regr_time))))
 
-        for tt in range(len(regr_time)):
-            decode_perform['action'][tt], decode_null['action'][tt,:] = results[tt]
+            for tt in range(len(regr_time)):
+                t1,t2=results[tt]
+                decode_perform[varname][tt] = t1[varname]
+                decode_null[varname][tt,:] = t2[varname]
+
+        return decode_perform, decode_null
 
     # define the function for parallel computing
-    def run_decoder(self, signal, decodeVar, trialMask, trialInd, idx, nullRepeats, classifier):
+    def run_decoder_old(self, signal,decodeVar,varname,trialInd, trialMask,
+                    nullRepeats, classifier, idx):
         # function for parallel computing
-
-        data = {
-            'raster': signal[:, trialMask, idx].transpose(),
-            'action': decodeVar['action'][trialMask],
-            #'outcome':decodeVar['outcome'][:,idx][trialMask],
-            'stimulus':decodeVar['stimulus'][:,idx][trialMask],
-            'trial': trialInd[trialMask],
-        }
-
-        conditions = {
-            'action': [1, 0],
-            'outcome': [1,0,-1],
-            #'stimulus':np.unique(decodeVar['stimulus']),  # this should be stimulus tested in the session
-        }
+        if varname == 'action':
+            data = {
+                'raster': signal[:, trialMask, idx].transpose(),
+                'action': decodeVar['action'][trialMask],
+                #varname:decodeVar[varname][trialMask],
+                #'stimulus': decodeVar['stimulus'][trialMask]
+                'trial': trialInd[trialMask],
+            }
+            conditions = {
+                'action': [1, 0],
+            }
+        elif varname == 'stimulus':
+            data = {
+                'raster': signal[:, trialMask, idx].transpose(),
+                'stimulus': decodeVar['stimulus'][trialMask],
+                'trial': trialInd[trialMask],
+            }
+            conditions = {
+                'stimulus': {
+                    'go': lambda d: d['stimulus'] <= 4,
+                    'nogo': lambda d: (d['stimulus'] >= 5) & (d['stimulus'] <= 8)
+                }  # this should be stimulus tested in the session
+            }
 
         dec = Decodanda(
             data=data,
             conditions=conditions,
-            classifier='RandomForest'
+            classifier=classifier
         )
 
         performance, null = dec.decode(
@@ -591,7 +663,438 @@ class fluoAnalysis:
             cross_validations=10,  # number of cross validation folds
             nshuffles=nullRepeats)
 
-        return performance['action'], null['action']
+        return performance, null
+
+    def decoding(self, decodeSig, decodeVar, varList, trialMask, subTrialMask, classifier, regr_time, saveDataPath):
+
+        # check if results already exist
+        if os.path.exists(saveDataPath):
+            print('Decoder exists, loading...')
+            with open(saveDataPath, 'rb') as pf:
+                # Load the data from the pickle file
+                decode_results = pickle.load(pf)
+                pf.close()
+        else:
+            decode_results = {}
+            nCells = decodeSig.shape[0]
+            n_shuffle = 20
+            for varname in varList:
+
+                decode_results[varname] = {}
+                decode_results[varname]['classifier'] = []
+                decode_results[varname]['ctrl'] = np.zeros((n_shuffle, len(regr_time)))
+                decode_results[varname]['accuracy'] = np.zeros(len(regr_time))
+                decode_results[varname]['importance'] = np.zeros((nCells,len(regr_time)))
+                decode_results[varname]['params'] = {}
+                decode_results[varname]['params']['n_estimators'] = np.zeros(len(regr_time))
+                decode_results[varname]['params']['max_depth'] = np.zeros(len(regr_time))
+                decode_results[varname]['params']['min_samples_leaf'] = np.zeros(len(regr_time))
+                decode_results[varname]['prediction'] = {}
+                decode_results[varname]['confidence'] = np.zeros((len(np.unique(decodeVar[varname])),
+                                                                  len(regr_time)))
+                n_jobs = -1
+
+
+                # Parallelize the loop over `trial`
+                results = Parallel(n_jobs=n_jobs, backend='multiprocessing')(
+                    delayed(self.run_decoder)(
+                        decodeSig[:,:,idx].transpose(), decodeVar[varname],trialMask,
+                        classifier, n_shuffle) for idx in
+                    tqdm(range(len(regr_time))))
+
+                #for tt in range(len(regr_time)):
+                # unpacking results
+                for rr in range(len(results)):
+                    tempResults = results[rr]
+                    decode_results[varname]['ctrl'][:,rr] = tempResults['ctrl']
+                    decode_results[varname]['accuracy'][rr] = tempResults['accuracy']
+                    decode_results[varname]['importance'][:,rr] = tempResults['importance']
+
+                    decode_results[varname]['params']['n_estimators'][rr] = tempResults['params']['n_estimators']
+                    decode_results[varname]['params']['max_depth'][rr] = tempResults['params']['max_depth']
+                    decode_results[varname]['params']['min_samples_leaf'][rr] = tempResults['params']['min_samples_leaf']
+                    decode_results[varname]['classifier'].append(tempResults['classifier'])
+                    decode_results[varname]['confidence'][:,rr] = tempResults['confidence']
+                # with trained model: decode action and cue in false alarm trials
+                for key in subTrialMask.keys():
+                    decode_results[varname]['prediction'][key] = np.zeros(len(regr_time))
+                    # in probe trials, 2 -> 0; 3 -> 1
+
+                    results = Parallel(n_jobs=n_jobs, backend='multiprocessing')(
+                        delayed(self.run_decoder_trained_model)(
+                        decode_results[varname]['classifier'][idx],
+                        decodeSig[:,:,idx].transpose(),
+                        decodeVar[varname],subTrialMask[key]) for idx in
+                        tqdm(range(len(regr_time))))
+
+                    for rr in range(len(results)):
+                        decode_results[varname]['prediction'][key][rr] = results[rr]
+
+            # save the decoding results
+            for key in varList:
+                del decode_results[key]['classifier']
+            decode_results['time'] = regr_time
+            decode_results['var'] = varList
+
+            with open(saveDataPath, 'wb') as pf:
+                pickle.dump(decode_results, pf, protocol=pickle.HIGHEST_PROTOCOL)
+                pf.close()
+            #return decode_perform, decode_null
+
+        return decode_results
+
+    def decode_analysis(self, neuronRaw, saveDataPath, saveFigPath):
+        ## do some other analysis
+        # plot decoding accuracy and control
+        # plot decoding accuracy for false alarm trials
+        #  identify cells with high importance, mark their location
+        with open(saveDataPath, 'rb') as pf:
+            # Load the data from the pickle file
+            decode_results = pickle.load(pf)
+            pf.close()
+
+        # plot decoding accuracy for different variables
+        decode_var = decode_results['var']
+        nVars = len(decode_var)
+
+        ''' plot decoding accuracy '''
+        # check outcome
+        decodePlot = StartSubplots(1, nVars, ifSharey=True)
+
+        for n in range(nVars):
+            decodePlot.ax[n].plot(decode_results['time'],
+                                  decode_results[decode_var[n]]['accuracy'], c=(1, 0, 0))
+            decodePlot.ax[n].set_title(decode_var[n])
+
+            if n == 0:
+                decodePlot.ax[n].set_ylabel('Decoding accuracy')
+                decodePlot.ax[n].set_xlabel('Time from cue (s)')
+            # plot null control
+            ctrl_results = decode_results[decode_var[n]]['ctrl']
+            bootCtrl = bootstrap(ctrl_results.transpose(),1, 0, n_sample=50)
+            decodePlot.ax[n].fill_between(decode_results['time'], bootCtrl['bootLow'],
+                                       bootCtrl['bootHigh'],color=(0.7, 0.7, 0.7))
+            decodePlot.ax[n].plot(decode_results['time'], bootCtrl['bootAve'], c=(0,0,0))
+
+        decodePlot.save_plot('Decoding accuracy.tiff', 'tiff', saveFigPath)
+
+        '''plot decoding accuracy in hit/false alarm/correct rejection trials'''
+        decodeFAPlot = StartSubplots(1, nVars, ifSharey=True)
+
+        for n in range(nVars):
+            plot_y1 = decode_results[decode_var[n]]['prediction']['Hit']
+            plot_y2 = decode_results[decode_var[n]]['prediction']['FA']
+            plot_y3 = decode_results[decode_var[n]]['prediction']['CorRej']
+            decodeFAPlot.ax[n].plot(decode_results['time'],
+                                 plot_y1, c=(1, 0, 0))
+            decodeFAPlot.ax[n].plot(decode_results['time'],
+                                    plot_y2, c=(0, 1, 0))
+            decodeFAPlot.ax[n].plot(decode_results['time'],
+                                    plot_y3, c=(0, 0, 1))
+            decodeFAPlot.ax[n].legend(['Hit', 'FA', 'CorRej'])
+            decodeFAPlot.ax[n].set_title(decode_var[n])
+
+            if n == 0:
+                decodeFAPlot.ax[n].set_ylabel('Decoding accuracy (Trial types)')
+            decodeFAPlot.ax[n].set_xlabel('Time from cue (s)')
+            # plot null control
+            ctrl_results = decode_results[decode_var[n]]['ctrl']
+            bootCtrl = bootstrap(ctrl_results.transpose(),1, 0, n_sample=50)
+            decodeFAPlot.ax[n].fill_between(decode_results['time'], bootCtrl['bootLow'],
+                                       bootCtrl['bootHigh'],color=(0.7, 0.7, 0.7))
+            decodeFAPlot.ax[n].plot(decode_results['time'], bootCtrl['bootAve'], c=(0,0,0))
+
+        decodeFAPlot.save_plot('Decoding accuracy (Trial types).tiff', 'tiff', saveFigPath)
+
+        '''plot decoding accuracy in probe trials'''
+        decodeProbePlot = StartSubplots(1, nVars, ifSharey=True)
+
+        for n in range(nVars):
+            plot_y = decode_results[decode_var[n]]['prediction']['probe']
+            decodeProbePlot.ax[n].plot(decode_results['time'],
+                                 plot_y, c=(1, 0, 0))
+            decodeProbePlot.ax[n].set_title(decode_var[n])
+
+            if n == 0:
+                decodeProbePlot.ax[n].set_ylabel('Decoding accuracy (Probe)')
+                decodeProbePlot.ax[n].set_xlabel('Time from cue (s)')
+            # plot null control
+            ctrl_results = decode_results[decode_var[n]]['ctrl']
+            bootCtrl = bootstrap(ctrl_results.transpose(),1, 0, n_sample=50)
+            decodeProbePlot.ax[n].fill_between(decode_results['time'], bootCtrl['bootLow'],
+                                       bootCtrl['bootHigh'],color=(0.7, 0.7, 0.7))
+            decodeProbePlot.ax[n].plot(decode_results['time'], bootCtrl['bootAve'], c=(0,0,0))
+
+        decodeProbePlot.save_plot('Decoding accuracy (Probe).tiff', 'tiff', saveFigPath)
+
+        ''' examine the important neurons'''
+        # determine the relative importance by median importance between 0-3 s from cue
+        importantNeurons = {}
+        regr_time = decode_results['time']
+        win = np.logical_and(regr_time > 0, regr_time < 3)
+        p_thresh = 0.01
+        for var in decode_var:
+            # get the neurons that is significantly more than population median
+            popMedianImportance = np.median(decode_results[var]['importance'][:,win])
+            importantNeurons[var] = []
+            for n in range(decode_results[var]['importance'].shape[0]):
+                _, p_val = wilcoxon(decode_results[var]['importance'][n,win]-popMedianImportance)
+                if p_val < p_thresh:
+                    importantNeurons[var].append(n)
+
+        # plot neuron position
+        cellstat = []
+        for cell in range(neuronRaw.Fraw.shape[0]):
+            if neuronRaw.cells[cell, 0] > 0:
+                cellstat.append(neuronRaw.stat[cell])
+
+        fluoCellPlot = StartPlots()
+        im = np.zeros((256, 256,3))
+
+        #for cell in range(decode_results[var]['importance'].shape[0]):
+        for cell in range(len(cellstat)):
+            xs = cellstat[cell]['xpix']
+            ys = cellstat[cell]['ypix']
+            if cell not in \
+                    set(importantNeurons['action'])|set( importantNeurons['outcome'])|set( importantNeurons['stimulus']):
+                im[ys, xs] = [0.7, 0.7, 0.7]
+
+        for cell in importantNeurons['action']:
+            xs = cellstat[cell]['xpix']
+            ys = cellstat[cell]['ypix']
+                #im[ys,xs] = [0,0,0]
+            im[ys, xs] = np.add(im[ys, xs], [1.0, 0.0, 0.0])
+        for cell in importantNeurons['outcome']:
+            xs = cellstat[cell]['xpix']
+            ys = cellstat[cell]['ypix']
+                #im[ys, xs] = [0, 0, 0]
+            im[ys,xs] = np.add(im[ys,xs],[0.0,1.0,0.0])
+        for cell in importantNeurons['stimulus']:
+            xs = cellstat[cell]['xpix']
+            ys = cellstat[cell]['ypix']
+                #im[ys, xs] = [0, 0, 0]
+            im[ys,xs] = np.add(im[ys,xs],[0.0,0.0,1.0])
+        action_patch = mpatches.Patch(color=(1,0,0), label='Action')
+        outcome_patch = mpatches.Patch(color=(0,1,0), label = 'Outcome')
+        stimulus_patch = mpatches.Patch(color=(0, 0, 1), label='Stimulus')
+        # Create a custom legend with the green patch
+        plt.legend(handles=[action_patch, outcome_patch, stimulus_patch],loc='center left',bbox_to_anchor=(1, 0.5))
+        fluoCellPlot.ax.imshow(im, cmap='CMRmap')
+        plt.show()
+
+        fluoCellPlot.save_plot('Decoding neuron coordinates.tiff', 'tiff', saveFigPath)
+
+    def run_decoder(self, input_x, input_y, trialMask, classifier, n_shuffle):
+        # hand-made decoder
+        # return a trained decoder that can be used to decode subset of signals in a manner of testing set
+
+
+        x = input_x[trialMask,:]
+        y = input_y[trialMask]
+        # need to make a balanced training set
+        X_test, y_test, X_train, y_train = self.get_train_test(x, y, test_size = 0.5, random_state = 66)
+
+        #from sklearn.decomposition import PCA
+        #x_transform = PCA(n_components=5).fit_transform(X_train)
+        #plt.scatter(x_transform[y_train==0,2], x_transform[y_train==0,1], c=(1,0,0))
+        #plt.scatter(x_transform[y_train == 1, 2], x_transform[y_train == 1, 1], c=(0, 1, 0))
+        from sklearn import model_selection
+
+        if classifier == 'RandomForest':
+
+            rfc = RFC()
+            n_estimators = [int(w) for w in np.linspace(start = 10, stop = 500, num=10)]
+            max_depth = [int(w) for w in np.linspace(5, 20, num=10)] # from sqrt(n) - n/2
+            min_samples_leaf = [0.1]
+            max_depth.append(None)
+
+            # create random grid
+            random_grid = {
+                'n_estimators': n_estimators,
+                'min_samples_leaf': min_samples_leaf,
+                'max_depth': max_depth
+            }
+            rfc_random = RandomizedSearchCV(estimator=rfc, param_distributions=random_grid,
+                                            n_iter=100, cv=3, verbose=False,
+                                            random_state=42, n_jobs=-1)
+            #rfc_random = RandomizedSearchCV(estimator=rfc, param_distributions=random_grid,
+            #                                n_iter=100, cv=5, verbose=False,
+            #                                random_state=42)
+
+            # Fit the model
+            rfc_random.fit(X_train, y_train)
+            # print results
+            #print(rfc_random.best_params_)
+
+            best_n_estimators = rfc_random.best_params_['n_estimators']
+            #best_n_estimators = 10
+            #best_max_features = rfc_random.best_params_['max_features']
+            best_max_depth = rfc_random.best_params_['max_depth']
+            best_min_samples_leaf = rfc_random.best_params_['min_samples_leaf']
+            model = RFC(n_estimators = best_n_estimators,
+                           max_depth=best_max_depth,min_samples_leaf=best_min_samples_leaf, class_weight='balanced')
+
+            # get control value by shuffling trials
+
+            model.fit(X_train, y_train)
+
+            # best_cv_score = cross_val_score(best_rfc,x,y,cv=10,scoring='roc_auc')
+            #from sklearn.metrics import balanced_accuracy_score
+            # print(balanced_accuracy_score(y_train,best_rfc.predict(X_train)))
+            # calculate decoding accuracy based on confusion matrix
+            best_predict = model.predict(X_test)
+            proba_estimates = model.predict_proba(X_test)
+            pred = confusion_matrix(y_test, best_predict)
+            pred_accuracy = np.trace(pred)/np.sum(pred)
+
+            # feature importance
+            importance = model.feature_importances_
+            # need to return: classfier (to decode specific trial type later)
+            #                 shuffled accuracy (control)
+            #                 accuracy (decoding results)
+            #                 importance
+            #                 best parameters of the randomforest decoder
+
+
+            # control
+            pred_shuffle = np.zeros(n_shuffle)
+            for ii in range(n_shuffle):
+                xInd = np.arange(len(y_test))
+                X_test_shuffle = np.zeros((X_test.shape))
+                for cc in range(X_train.shape[1]):
+                    np.random.shuffle(xInd)
+                    X_test_shuffle[:,cc] = X_test[xInd,cc]
+
+                predict_shuffle = model.predict(X_test_shuffle)
+                pred = confusion_matrix(y_test, predict_shuffle)
+                pred_shuffle[ii] = np.trace(pred) / np.sum(pred)
+
+        elif classifier == 'SVC':
+            model = SVC(kernel='linear')
+
+            # best_cv_score = cross_val_score(best_rfc,x,y,cv=10,scoring='roc_auc')
+            # from sklearn.metrics import balanced_accuracy_score
+            # print(balanced_accuracy_score(y_train,best_rfc.predict(X_train)))
+            # calculate decoding accuracy based on confusion matrix
+            model.fit(X_train,y_train)
+            best_predict = model.predict(X_test)
+            pred = confusion_matrix(y_test, best_predict)
+            pred_accuracy = np.trace(pred) / np.sum(pred)
+
+            # feature importance
+            importance = model.coef_
+            pred_shuffle = np.zeros(n_shuffle)
+            for ii in range(n_shuffle):
+                xInd = np.arange(len(y_test))
+                X_test_shuffle = np.zeros((X_test.shape))
+                for cc in range(X_train.shape[1]):
+                    np.random.shuffle(xInd)
+                    X_test_shuffle[:, cc] = X_test[xInd, cc]
+
+                predict_shuffle = model.predict(X_test_shuffle)
+                pred = confusion_matrix(y_test, predict_shuffle)
+                pred_shuffle[ii] = np.trace(pred) / np.sum(pred)
+
+
+        decoder = {}
+        decoder['classifier'] = model
+        decoder['ctrl'] = pred_shuffle
+        decoder['accuracy'] = pred_accuracy
+        decoder['importance'] = importance
+        if classifier == 'RandomForest':
+            decoder['params'] = rfc_random.best_params_
+            decoder['confidence'] = np.mean(proba_estimates,0)
+        return decoder
+
+    def run_decoder_trained_model(self, decoder, input_x, input_y, subTrialMask):
+        # decode subset of trials with already trained model
+
+        x = input_x[subTrialMask,:]
+        y = input_y[subTrialMask]
+
+
+        # calculate decoding accuracy based on confusion matrix
+        predict = decoder.predict(x)
+
+        pred_accuracy = np.sum(predict==y)/len(y)
+
+        return pred_accuracy
+
+    def get_train_test(self, X, y, test_size, random_state):
+        # check number of classes
+        random.seed(random_state)
+        classes = np.unique(y)
+        nClass = len(np.unique(y))
+
+        instance_class = np.zeros(nClass)
+        for cc in range(nClass):
+            instance_class[cc] = np.sum(y==classes[cc])
+
+        minIns = np.min(instance_class)
+        minInd = np.unravel_index(np.argmin(instance_class),instance_class.shape)
+        minClass = classes[minInd]
+
+        # split the trials based on test_size and the class with minimum instances
+        classCountTest = np.sum(y==minClass)*test_size
+        trainInd = []
+        testInd = []
+        for nn in range(nClass):
+            tempClassInd = np.arange(len(y))[y==classes[nn]]
+            tempTestInd = random.choices(tempClassInd,
+                                          k=int(classCountTest))
+            IndRemain = np.setdiff1d(tempClassInd,tempTestInd)
+            tempTrainInd = random.choices(IndRemain,
+                                          k=int(classCountTest))
+            testInd = np.concatenate([testInd,tempTestInd])
+            trainInd = np.concatenate([trainInd,tempTrainInd])
+
+        trainInd = trainInd.astype(int)
+        testInd = testInd.astype(int)
+
+        X_train = X[trainInd,:]
+        X_test = X[testInd,:]
+        y_train = y[trainInd]
+        y_test = y[testInd]
+
+        return X_train,y_train, X_test, y_test
+
+
+    def get_dpca(self, signal, var):
+        """
+        PCA analysis on calcium data
+        demixed PCA
+        signal: shape [numCells, time_bin, stim, action]
+        # python code not working, output the data for dPCA in matlab?
+        """
+
+        # prepare the signal for dpca input
+        nVars = var.keys()
+        nCells = signal.shape[0]
+        nTimeBins = signal.shape[2]
+        nTrials = signal.shape[1]
+        trialInd = np.arange(nTrials)
+        signal_pca = np.zeros((nCells, nTimeBins, 2, 2))
+        # for the last two dimensions
+        # (0, 0): nogo+nolick; (0, 1): nogo+lick
+        # (1, 0): go+miss; (1,1): go+lick
+        hitTrials = trialInd[np.logical_and(var['stim']==1, var['action']==1)]
+        FATrials = trialInd[np.logical_and(var['stim']==0, var['action']==1)]
+        CorRejTrials = trialInd[np.logical_and(var['stim']==0, var['action']==0)]
+        missTrials = trialInd[np.logical_and(var['stim']==1, var['action']==0)]
+        for cc in range(nCells):
+            signal_pca[cc, :, 1, 1] = np.mean(signal[cc,hitTrials,:],0)
+            signal_pca[cc, :, 1, 0] = np.mean(signal[cc, missTrials, :], 0)
+            signal_pca[cc, :, 0, 1] = np.mean(signal[cc, FATrials, :], 0)
+            signal_pca[cc, :, 0, 0] = np.mean(signal[cc, CorRejTrials, :], 0)
+
+        labels = 'tsd'
+        join = {}
+        dpca = dPCA.dPCA(labels = labels, join = None, n_components=3)
+        dpca.fit(signal_pca)
+
+    def clusering(self):
+        # hierachical clustering
+        pass
 
 if __name__ == "__main__":
     animal, session = 'JUV015', '220409'
@@ -616,10 +1119,7 @@ if __name__ == "__main__":
 
     # dff_df = gn_series.calculate_dff(melt=False)
 
-    beh_file = r'C:\Users\linda\Documents\GitHub\madeline_go_nogo\data\JUV015_220409_behavior_output.csv'
-    beh_data = pd.read_csv(beh_file)
-    #beh_data = trialbytrial.to_df()
-    fluo_data = pd.read_csv(fluo_file)
+    beh_file = r'C:\Users\linda\Documents\GitHub\madeline_go_nogo\data\behAnalysis.pickle'
 
     # build the linear regression model
     analysis = fluoAnalysis(beh_file,fluo_file)
@@ -634,22 +1134,72 @@ if __name__ == "__main__":
     # build multiple linear regression
     # arrange the independent variables
 
-    X, y, regr_time = analysis.linear_model()
+    n_predictors = 13
+    labels = ['s(n+1)','s(n)', 's(n-1)','c(n+1)', 'c(n)', 'c(n-1)',
+              'r(n+1)', 'r(n)', 'r(n-1)', 'x(n+1)', 'x(n)', 'x(n-1)', 'speed']
+    X, y, regr_time = analysis.linear_model(n_predictors)
 
     # for decoding
     # decode for action/outcome/stimulus
     decodeVar = {}
-    decodeVar['action'] = X[2,:,0]
-    decodeVar['outcome'] = X[5,:,0]
-    decodeVar['stimulus'] = X[0,:,0]
+
+    decodeVar['action'] = X[4,:,0]
+    decodeVar['outcome'] = X[7,:,0]
+    decodeVar['stimulus'] = np.array([np.int(analysis.beh['sound_num'][x]) for x in range(len(analysis.beh['sound_num']))])
     decodeSig = y
-    trialMask = np.ones(decodeSig.shape[1])
-    trialMask = trialMask.astype(bool)
+
+    trialMask = decodeVar['stimulus'] <= 8
+    # check false alarm trials, and probe trials
+    subTrialMask = {}
+    subTrialMask['FA'] = analysis.beh['trialType'] == -1
+    subTrialMask['probe'] = decodeVar['stimulus'] > 8
+    subTrialMask['Hit'] = analysis.beh['trialType'] == 2
+    subTrialMask['CorRej'] = analysis.beh['trialType'] == 0
+    # stimulus 1-4: 1
+    # stimulus 5-8: 0
+    # stimulus 9-12；2
+    # stimulus 13-16: 3
+    tempSti = np.zeros(len(decodeVar['stimulus']))
+    for ss in range(len(decodeVar['stimulus'])):
+        if decodeVar['stimulus'][ss] <= 4:
+            tempSti[ss] = 1
+        elif decodeVar['stimulus'][ss] > 4 and decodeVar['stimulus'][ss] <= 8:
+            tempSti[ss] = 0
+        elif decodeVar['stimulus'][ss] > 8 and decodeVar['stimulus'][ss] <= 12:
+            tempSti[ss] = 1
+        elif decodeVar['stimulus'][ss] > 12:
+            tempSti[ss] = 0
+    decodeVar['stimulus'] = tempSti
 
     classifier = "RandomForest"
-    analysis.decoding(decodeSig, decodeVar, trialMask, classifier, regr_time)
+    varList = ['action','outcome','stimulus']
+    saveDataPath = r'C:\Users\linda\Documents\GitHub\madeline_go_nogo\data\decode.pickle'
+    saveFigPath = r'C:\Users\linda\Documents\GitHub\madeline_go_nogo\data\fluo_plot'
+    #decode_results = analysis.decoding(decodeSig, decodeVar, varList, trialMask,subTrialMask, classifier, regr_time, saveDataPath)
+    neuronRaw = gn_series
+
 
     MLRResult = analysis.linear_regr(X[:,1:-2,:], y[:,1:-2,:], regr_time)
+    analysis.plotMLRResult(MLRResult, labels, saveFigPath)
+    # train decode model on whole dataset, use it to decode FA trials later
 
-    analysis.plotMLRResult(MLRResult)
+    # conditions to decode:
+    # error trials
+    # neuron position
+    # redundancy
+    analysis.plotMLRResult(MLRResult, labels, saveFigPath)
+
+    '''demixed PCA'''
+    stim = np.array([np.int(analysis.beh['sound_num'][x]) for x in range(len(analysis.beh['sound_num']))])
+    tempStim = np.zeros(len(stim))
+    for ss in range(len(stim)):
+        if stim[ss] <= 4:
+            tempStim[ss] = 1
+        elif stim[ss] > 4 and stim[ss] <= 8:
+            tempStim[ss] = 0
+        elif stim[ss] > 8 and stim[ss] <= 12:
+            tempStim[ss] = 2
+        elif stim[ss] > 12:
+            tempStim[ss] = 3
+    pcaVar = {'stim':tempStim, 'action':X[4,:,0]}
     x = 1
