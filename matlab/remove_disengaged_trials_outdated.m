@@ -1,4 +1,4 @@
-function [adj_actions, adj_cues, adj_numtrials] = remove_disengaged_trials(day_file, actions, schedule)
+function [adj_actions, adj_cues, adj_numtrials] = remove_disengaged_trials_outdated(day_file, actions, schedule)
 
 % recode mouse's choices into a binary + NaN array
 actions_coded = actions;

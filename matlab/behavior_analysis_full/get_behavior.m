@@ -1,14 +1,14 @@
-function [dprimes, lickrate, session_info, files_processed] = get_behavior(animal_folder)
+function [dprimes, lickrate, session_info] = get_behavior(animal_folder, output)
 
 %num_bins = 4;
 session_files = dir(strcat(animal_folder,'/*.mat'));
-files_processed = [];
+%files_processed = [];
 
 for day = 1:size(session_files,1) 
 
     day_file = session_files(day).name; 
     session = ['session' num2str(day)];
-    load(strcat(animal_folder,'/',day_file));
+    load(fullfile(animal_folder,day_file));
     num_trials_old = exper.headfix_sound_gong.param.countedtrial.value;
 
     [adj_behav, adj_cues, adj_trials] = remove_disengaged_trials(day_file, ...
@@ -16,9 +16,17 @@ for day = 1:size(session_files,1)
         exper.headfix_sound_gong.param.schedule.value(1:num_trials_old));
     session_info.num_adj_trials(day) = adj_trials;
     session_info.behavior_level(day) = cumulative_cues(adj_cues);
+    
+    %% old pipeline to generate behavior LOG.mat for python process
 
+    input = fullfile(animal_folder,day_file);
+    cutoff = length(adj_trials)
+    [~] = gonogo_extract_behavior(input, output, cutoff);
+
+
+    %% behavior analysis
     [dprime, bycue, licking] = dprime_1session(adj_trials, adj_behav, adj_cues);
-    binned_dprimes = dprime_binned(adj_trials, adj_behav, adj_cues, num_bins);
+    %binned_dprimes = dprime_binned(adj_trials, adj_behav, adj_cues, num_bins);
     dprimes.overall_by_session(day) = dprime;
     dprimes.cueset1_by_session(day) = bycue(1);
     dprimes.cueset2_by_session(day) = bycue(2);
