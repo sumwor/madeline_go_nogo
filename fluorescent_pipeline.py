@@ -16,14 +16,18 @@ import os
 from utils_signal import *
 import pickle
 from packages.decodanda_master.decodanda import Decodanda
+import seaborn as sns
 
 from scipy.stats import wilcoxon
+from scipy.ndimage.filters import gaussian_filter1d
 from sklearn.ensemble import RandomForestClassifier as RFC
 from sklearn.svm import SVC
 from sklearn.model_selection import RandomizedSearchCV
 from sklearn.model_selection import cross_val_score
 from sklearn.metrics import classification_report, confusion_matrix
 from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import StandardScaler
+from sklearn.decomposition import PCA
 import warnings
 import random
 
@@ -465,7 +469,7 @@ class fluoAnalysis:
 
         return np.array(independent_X), np.array(dFF_Y), regr_time
 
-    def linear_regr(self, X, y, regr_time):
+    def linear_regr(self, X, y, regr_time, saveDataPath):
         # try logistic regression for cues?
         """
         x： independent variables
@@ -502,6 +506,9 @@ class fluoAnalysis:
             MLRResult['coeff'][:,tt,:], MLRResult['pval'][:,tt,:], MLRResult['r2'][tt,:] = results[tt]
 
         MLRResult['regr_time'] = regr_time
+        with open(saveDataPath, 'wb') as pf:
+            pickle.dump(MLRResult, pf, protocol=pickle.HIGHEST_PROTOCOL)
+            pf.close()
         return MLRResult
 
     def plotMLRResult(self, MLRResult, labels, saveFigPath):
@@ -1059,12 +1066,14 @@ class fluoAnalysis:
         return X_train,y_train, X_test, y_test
 
 
-    def get_dpca(self, signal, var):
+    def get_dpca(self, signal, var, regr_time):
         """
         PCA analysis on calcium data
         demixed PCA
         signal: shape [numCells, time_bin, stim, action]
         # python code not working, output the data for dPCA in matlab?
+        referece: https://pietromarchesi.net/pca-neural-data.html#theforms
+        PCA averaged-concatenated (hybrid) form
         """
 
         # prepare the signal for dpca input
@@ -1073,7 +1082,7 @@ class fluoAnalysis:
         nTimeBins = signal.shape[2]
         nTrials = signal.shape[1]
         trialInd = np.arange(nTrials)
-        signal_pca = np.zeros((nCells, nTimeBins, 2, 2))
+        signal_pca = []
         # for the last two dimensions
         # (0, 0): nogo+nolick; (0, 1): nogo+lick
         # (1, 0): go+miss; (1,1): go+lick
@@ -1081,16 +1090,109 @@ class fluoAnalysis:
         FATrials = trialInd[np.logical_and(var['stim']==0, var['action']==1)]
         CorRejTrials = trialInd[np.logical_and(var['stim']==0, var['action']==0)]
         missTrials = trialInd[np.logical_and(var['stim']==1, var['action']==0)]
-        for cc in range(nCells):
-            signal_pca[cc, :, 1, 1] = np.mean(signal[cc,hitTrials,:],0)
-            signal_pca[cc, :, 1, 0] = np.mean(signal[cc, missTrials, :], 0)
-            signal_pca[cc, :, 0, 1] = np.mean(signal[cc, FATrials, :], 0)
-            signal_pca[cc, :, 0, 0] = np.mean(signal[cc, CorRejTrials, :], 0)
+        signal_pca.append(np.mean(signal[:,hitTrials,:],1))
+        signal_pca.append(np.mean(signal[:, FATrials, :], 1))
+        signal_pca.append(np.mean(signal[:, CorRejTrials, :], 1))
+        signal_pca.append(np.mean(signal[:, missTrials, :], 1))
 
-        labels = 'tsd'
-        join = {}
-        dpca = dPCA.dPCA(labels = labels, join = None, n_components=3)
-        dpca.fit(signal_pca)
+        signal_ave = np.hstack(signal_pca)
+
+        # z-score the average df/f
+        ss = StandardScaler(with_mean=True, with_std=True)
+        signal_ave_sc = ss.fit_transform(signal_ave.T).T
+
+        n_components = 15
+        pca = PCA(n_components=n_components)
+        pca.fit(signal_ave_sc.T)
+
+        # plot amount of variance explained?
+
+        # project individual trials to fitted PCA
+        projected_trials = []
+        signal_sc = np.zeros((signal.shape[0], signal.shape[1], signal.shape[2]))
+        for tt in range(signal.shape[1]):
+            signal_sc[:,tt,:] = ss.transform(signal[:,tt,:].T).T
+            proj_trial = pca.transform(signal_sc[:,tt,:].T).T
+            projected_trials.append(proj_trial)
+        trial_types = ['Hit', 'FA', 'CorRej', 'Miss']
+        gt = {comp: {t_type: [] for t_type in trial_types}
+              for comp in range(n_components)}
+
+        for comp in range(n_components):
+            for t in hitTrials:
+                tt = projected_trials[t][comp,:]
+                gt[comp]['Hit'].append(tt)
+            for t in FATrials:
+                tt = projected_trials[t][comp,:]
+                gt[comp]['FA'].append(tt)
+            for t in CorRejTrials:
+                tt = projected_trials[t][comp,:]
+                gt[comp]['CorRej'].append(tt)
+            for t in missTrials:
+                tt = projected_trials[t][comp,:]
+                gt[comp]['Miss'].append(tt)
+
+
+            '''use own plot function, include bootstrap CIs'''
+            pal = sns.color_palette('husl', 4)
+            f, axes = plt.subplots(1, 3, figsize=[10, 2.8], sharey=True, sharex=True)
+            for comp in range(3):
+                ax = axes[comp]
+                for t, t_type in enumerate(trial_types):
+                    #sns.tsplot(gt[comp][t_type], time=regr_time, ax=ax,
+                    #           err_style='ci_band',
+                    #           ci=95,
+                    #           color=pal[t])
+                    ax.plot(regr_time,np.mean(gt[comp][t_type],0))
+                #add_stim_to_plot(ax)
+                ax.set_ylabel('PC {}'.format(comp + 1))
+            axes[1].set_xlabel('Time (s)')
+            sns.despine(right=True, top=True)
+            #add_orientation_legend(axes[2])
+
+            '''3d PCA projections'''
+            ave_pca = PCA(n_components = 3)
+            signal_ave_p = ave_pca.fit_transform(signal_ave_sc.T).T
+
+            component_x = 0
+            component_y = 1
+            component_z = 2
+
+            sigma = 3 # smoothing param
+
+            fig = plt.figure(figsize=[9,4])
+            ax = fig.add_subplot(1,1,1, projection='3d')
+            ax.set_xticks([])
+            ax.set_yticks([])
+            ax.set_zticks([])
+            ax.xaxis.pane.fill = False
+            ax.yaxis.pane.fill = False
+            ax.zaxis.pane.fill = False
+            ax.xaxis.pane.set_edgecolor('w')
+            ax.yaxis.pane.set_edgecolor('w')
+            ax.zaxis.pane.set_edgecolor('w')
+            ax.set_xlabel('PC 1')
+            ax.set_ylabel('PC 2')
+            ax.set_zlabel('PC 3')
+
+            trial_size = len(regr_time)
+            for t, t_type in enumerate(trial_types):
+                x = signal_ave_p[component_x, t * trial_size :(t+1) * trial_size]
+                y = signal_ave_p[component_y, t * trial_size :(t+1) * trial_size]
+                z = signal_ave_p[component_z, t * trial_size :(t+1) * trial_size]
+
+                # apply some smoothing to the trajectories
+                x = gaussian_filter1d(x, sigma=sigma)
+                y = gaussian_filter1d(y, sigma=sigma)
+                z = gaussian_filter1d(z, sigma=sigma)
+
+                # use the mask to plot stimulus and pre/post stimulus separately
+
+                ax.plot(x, y, z, c=pal[t])
+
+                # plot dots at initial point
+                #ax.scatter(x[0], y[0], z[0], c=pal[t], s=25)
+
 
     def clusering(self):
         # hierachical clustering
@@ -1178,8 +1280,8 @@ if __name__ == "__main__":
     #decode_results = analysis.decoding(decodeSig, decodeVar, varList, trialMask,subTrialMask, classifier, regr_time, saveDataPath)
     neuronRaw = gn_series
 
-
-    MLRResult = analysis.linear_regr(X[:,1:-2,:], y[:,1:-2,:], regr_time)
+    saveDataPath = r'C:\\Users\\linda\\Documents\\GitHub\\madeline_go_nogo\\data\\MLR.pickle'
+    MLRResult = analysis.linear_regr(X[:,1:-2,:], y[:,1:-2,:], regr_time, saveDataPath)
     analysis.plotMLRResult(MLRResult, labels, saveFigPath)
     # train decode model on whole dataset, use it to decode FA trials later
 
@@ -1187,7 +1289,6 @@ if __name__ == "__main__":
     # error trials
     # neuron position
     # redundancy
-    analysis.plotMLRResult(MLRResult, labels, saveFigPath)
 
     '''demixed PCA'''
     stim = np.array([np.int(analysis.beh['sound_num'][x]) for x in range(len(analysis.beh['sound_num']))])
