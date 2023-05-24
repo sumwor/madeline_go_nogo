@@ -26,6 +26,9 @@ import pickle
 
 from behavior_base import PSENode, EventNode
 
+# import matlab engine
+import matlab.engine
+eng = matlab.engine.start_matlab()
 # From matlab file get_Headfix_GoNo_EventTimes.m:
 # % eventID=1:    2P imaging frame TTL high
 # % eventID=2:    2P imaging frame TTL low
@@ -117,7 +120,7 @@ class GoNogoBehaviorMat(BehaviorMat):
         # get the timestamp for aligning with fluorescent data
         if isinstance(hfile, str):
             with h5py.File(hfile, 'r') as hf:
-                if 'frame_time' in hf:
+                if 'out/frame_time' in hf:
                     frame_time = np.array(hf['out/frame_time']).ravel()
                 else:
                     frame_time = np.nan
@@ -170,7 +173,7 @@ class GoNogoBehaviorMat(BehaviorMat):
 
         result_df['trial'] = np.arange(1, self.trialN + 1)
         result_df['sound_num'] = pd.Categorical([""] * self.trialN, np.arange(1, 16 + 1), ordered=False)
-        result_df['reward'] = pd.Categorical([""] * self.trialN, [-1, 0, 1, 2], ordered=False)
+        result_df['reward'] = pd.Categorical([""] * self.trialN, [-1, 0, 1], ordered=False)
         result_df['go_nogo'] = pd.Categorical([""] * self.trialN, ['go', 'nogo'], ordered=False)
         result_df['licks_out'] = np.full((self.trialN, 1), 0)
         result_df['quality'] = pd.Categorical(["normal"] * self.trialN, ['missed', 'abort', 'normal'], ordered=False)
@@ -179,7 +182,9 @@ class GoNogoBehaviorMat(BehaviorMat):
 
         # add another entry to record all the licks
         result_df['licks'] = [[] for _ in range(self.trialN)] # convert to np.array later
-        result_df['choice'] = pd.Categorical([""] * self.trialN, [-4, -3, -2, -1, 0, 1, 2], ordered=False)
+        result_df['choice'] = pd.Categorical([""] * self.trialN, [0, 1], ordered=False)
+
+        result_df['trialType'] = pd.Categorical([""] * self.trialN, [-4, -3, -2, -1, 0, 1, 2], ordered=False)
 
         for node in self.eventlist:
             # New tone signifies a new trial
@@ -215,11 +220,11 @@ class GoNogoBehaviorMat(BehaviorMat):
                 if outcome in ['missed', 'abort']:
                     result_df.loc[node.trial_index()-1, 'quality'] = outcome
                 # reward
-                if '_correct_' in outcome:
-                    reward = int(outcome[-1]) if outcome[-1].isnumeric() else 0
-                    result_df.loc[node.trial_index()-1, 'reward'] = reward
-                else:
-                    result_df.loc[node.trial_index()-1, 'reward'] = -1
+                # if '_correct_' in outcome:
+                #     reward = int(outcome[-1]) if outcome[-1].isnumeric() else 0
+                #     result_df.loc[node.trial_index()-1, 'reward'] = reward
+                # else:
+                #     result_df.loc[node.trial_index()-1, 'reward'] = -1
                 # go nogo
                 if outcome.startswith('go') or outcome == 'missed':
                     result_df.loc[node.trial_index()-1, 'go_nogo'] = 'go'
@@ -237,7 +242,7 @@ class GoNogoBehaviorMat(BehaviorMat):
             result_df['running_speed'] = [[] for _ in range(self.trialN)]
             result_df['running_time'] = [[] for _ in range(self.trialN)]
 
-        # remap reward to self.outcome
+        # remap trialType (eaiser for grouping trials based on cue and outcome）
         # -4: probeSti, no lick;
         # -3: probSti, lick;
         # -2: miss;
@@ -256,21 +261,138 @@ class GoNogoBehaviorMat(BehaviorMat):
                 elif tt == self.trialN-1:
                     result_df.at[tt, 'running_speed'] = self.runningSpeed[self.runningSpeed[:, 0] >= t_start-3, 1].tolist()
                     result_df.at[tt, 'running_time'] = self.runningSpeed[self.runningSpeed[:, 0] >= t_start - 3, 0].tolist()
-            # remap reward to outcome
+            # remap choice and reward
+            # choice: 1/0 lick/no lick
+            # reward: 1/0/-1 hit/correct rejection/false alarm,miss
+            result_df.at[tt, 'choice'] = 0 if result_df.at[tt, 'licks_out'] == 0 else 1
             if result_df.sound_num[tt] in [9, 10, 11, 12, 13, 14, 15, 16]:
-                result_df.at[tt, 'choice'] = -4 if result_df.at[tt, 'licks_out']==0 else -3
+                result_df.at[tt, 'reward'] = 0
             elif result_df.sound_num[tt] in [1, 2, 3, 4]:
-                result_df.at[tt, 'choice'] = -2 if result_df.at[tt, 'licks_out']==0 else result_df.at[tt, 'reward']
+                result_df.at[tt, 'reward'] = -1 if result_df.at[tt, 'licks_out']==0 else 1
             elif result_df.sound_num[tt] in [5, 6, 7, 8]:
-                result_df.at[tt, 'choice'] = 0 if result_df.at[tt, 'licks_out']==0 else -1
+                result_df.at[tt, 'reward'] = 0 if result_df.at[tt, 'licks_out']==0 else -1
+
+            if result_df.sound_num[tt] in [9, 10, 11, 12, 13, 14, 15, 16]:
+                result_df.at[tt, 'trialType'] = -4 if result_df.at[tt,'licks_out'] == 0 else -3
+            elif result_df.sound_num[tt] in [1, 2, 3, 4]:
+                result_df.at[tt, 'trialType'] = -2 if result_df.at[tt, 'licks_out'] == 0 else 2
+            elif result_df.sound_num[tt] in [5, 6, 7, 8]:
+                result_df.at[tt, 'trialType'] = 0 if result_df.at[tt, 'licks_out']==0 else -1
 
         # save the data into self
         self.DF = result_df
-
-        self.saveData['behDF'] = result_df
+        self.saveData['behFull'] = result_df
 
         return result_df
 
+    def beh_cut(self, save_path):
+        # obslete
+        # animals stop to engage in the task in some sessions
+        # should only apply in later session???
+        # calculate the running d-prime and detect change point, then delete the
+        # following trials
+
+        # calculate running d-prime in 50 trial blocks
+        nStep = 50
+        nTrials = self.DF.shape[0]
+        runningDprime = np.zeros(nTrials-nStep+1)
+        runningHitRate = np.zeros(nTrials-nStep+1)
+        for idx in range(nTrials-nStep+1):
+            # use loglinear to calculate the d-prime
+            # reference: Macmillan & Kaplan, 1985
+            # adjusted_hitRate = (nHit+ nGo/nSum)/(nGo+1)
+            # adjusted_FARate = (nFA+nNoGo/nSum)/(nNoGo+1)
+
+            nTrialGo = np.sum(np.logical_or(self.DF['trialType'][idx:idx+nStep] == 2,
+                                self.DF['trialType'][idx:idx+nStep] == -2))
+            nTrialNoGo = np.sum(np.logical_or(self.DF['trialType'][idx:idx+nStep] == -1,
+                                self.DF['trialType'][idx:idx+nStep] == 0))
+            Hit_rate = (np.sum(self.DF['trialType'][idx:idx+nStep] == 2)+
+                        nTrialGo/(nTrialGo+nTrialNoGo)) / (nTrialGo+1)
+            FA_rate = (np.sum(self.DF['trialType'][idx:idx+nStep]== -1)+
+                        nTrialNoGo/(nTrialNoGo+nTrialGo))/ (nTrialNoGo+1)
+
+            runningHitRate[idx] = Hit_rate
+            runningDprime[idx] = norm.ppf(Hit_rate) - norm.ppf(FA_rate)
+
+        # change point detection using matlab function ischange
+        try:
+            TF, S1, S2 = eng.ischange(runningHitRate, 'linear', 'MaxNumChanges', 2, nargout=3)
+        except:
+            TF = [[np.nan]]
+            S1 = [[np.nan]]
+            S2 = [[np.nan]]
+
+        if not np.isnan(TF[0][0]):
+            hitThresh = 0.8
+            segline = np.array(S1[0])*(np.arange(len(runningHitRate))) + np.array(S2[0])
+
+            # find the point where runninghitrate is below 0.8
+            xAxis = np.arange(len(runningHitRate))
+            IndAbove = segline[0]<hitThresh
+
+            cross_point = eng.ischange(np.double(IndAbove))[0]
+            TF_hitThresh = [xAxis[i] for i in range(len(xAxis)) if cross_point[i]] # including change points both go below 1 and go above 1
+            TF_belowThresh = []
+            for k in range(len(TF_hitThresh)):
+                if segline[0][TF_hitThresh[k] - 1] > hitThresh:
+                    TF_belowThresh.append(TF_hitThresh[k])
+
+            tfPoint = [xAxis[i] for i in range(len(xAxis)) if TF[0][i]]
+            self.cutoff = 0
+            self.ifCut = False
+            # chech if TF_belowThresh is None
+
+            if TF_belowThresh is not None:
+                for ii in range(len(TF_belowThresh)):
+            # check the point 1 by 1
+                    if TF_belowThresh[ii] > 150: # critierion 1
+            # finding the change point before I(ii)
+                        if TF_belowThresh[ii] in tfPoint: # the point itself is a change point
+                            if segline[0][TF_belowThresh[ii]] < hitThresh: # criterion 2
+                                if np.max(segline[0][TF_belowThresh[ii] + 1:-1]) < segline[0][TF_belowThresh[ii] - 1]: # criterion 3
+                                    self.cutoff = TF_belowThresh[ii]
+                                    self.ifCut = True
+                                    break
+                        else:
+                        # find the last trial when hit rate drop below threshold
+                            tf_all = np.where(tfPoint < TF_belowThresh[ii])[0]
+                            if tf_all.size == 0:
+                                tf = 0
+                            else:
+                                tf = np.where(tfPoint < TF_belowThresh[ii])[0][-1]
+                            tfP = tfPoint[tf]
+                            if np.max(segline[0][TF_belowThresh[ii] + 1: -1]) < np.max([segline[0][tfP - 1], segline[0][tfP]]):
+                    # criterion 3
+                                self.ifCut = True
+                                self.cutoff = TF_belowThresh[ii]
+                                break
+
+        else:
+            self.cutoff = 0
+            self.ifCut = False
+            segline = np.zeros(len(runningHitRate))
+
+
+        # plot the cut result
+        cut_plot = StartPlots()
+        cut_plot.ax.plot(runningDprime)
+        cut_plot.ax.plot(runningHitRate)
+        cut_plot.ax.plot(segline[0])
+        if self.ifCut:
+            cut_plot.ax.scatter(self.cutoff, runningHitRate[self.cutoff], s= 80, c='red')
+        cut_plot.save_plot('Cut point.png', 'png', save_path)
+
+        # save the result
+        if self.ifCut:
+            self.DFFull = self.DF
+            self.DF = self.DF.iloc[0:self.cutoff]
+            self.trialNFull = self.trialN
+            self.trialN = self.cutoff
+
+        self.saveData['ifCut'] = self.ifCut
+        self.saveData['cutoff'] = self.cutoff
+        self.saveData['behDF'] = self.DF
     def output_df(self, outfile, file_type='csv'):
         """
         saves the output of to_df() as a file of the specified type
@@ -287,31 +409,38 @@ class GoNogoBehaviorMat(BehaviorMat):
         plotname = os.path.join(save_path,'Behavior summary.svg')
         if not os.path.exists(plotname) or ifrun:
             # plot the outcome according to trials
-            trialNum = np.arange(self.trialN)
+
 
             beh_plots = StartPlots()
             # hit trials
-            beh_plots.ax.scatter(trialNum[self.DF.choice == 2], np.array(self.DF.choice[self.DF.choice == 2]),
+            if self.ifCut:
+                behDF = self.DFFull
+                trialNum = np.arange(self.trialNFull)
+            else:
+                behDF = self.DF
+                trialNum = np.arange(self.trialN)
+
+            beh_plots.ax.scatter(trialNum[behDF.trialType == 2], np.array(behDF.trialType[behDF.trialType == 2]),
                        s=100, marker='o')
 
             # miss trials
-            beh_plots.ax.scatter(trialNum[self.DF.choice == -2], self.DF.choice[self.DF.choice == -2], s=100,
+            beh_plots.ax.scatter(trialNum[behDF.trialType == -2], behDF.trialType[behDF.trialType == -2], s=100,
                        marker='x')
 
             # false alarm
-            beh_plots.ax.scatter(trialNum[self.DF.choice == -1], self.DF.choice[self.DF.choice == -1], s=100,
+            beh_plots.ax.scatter(trialNum[behDF.trialType == -1], behDF.trialType[behDF.trialType == -1], s=100,
                        marker='*')
 
             # correct rejection
-            beh_plots.ax.scatter(trialNum[self.DF.choice == 0], self.DF.choice[self.DF.choice == 0], s=100,
+            beh_plots.ax.scatter(trialNum[behDF.trialType == 0], behDF.trialType[behDF.trialType == 0], s=100,
                        marker='.')
 
             # probe lick
-            beh_plots.ax.scatter(trialNum[self.DF.choice == -3], self.DF.choice[self.DF.choice == -3], s=100,
+            beh_plots.ax.scatter(trialNum[behDF.trialType == -3], behDF.trialType[behDF.trialType == -3], s=100,
                        marker='v')
 
-            # proble no lick
-            beh_plots.ax.scatter(trialNum[self.DF.choice == -4], self.DF.choice[self.DF.choice == -4], s=100,
+            # probe no lick
+            beh_plots.ax.scatter(trialNum[behDF.trialType == -4], behDF.trialType[behDF.trialType == -4], s=100,
                        marker='^')
 
             #ax.spines['top'].set_visible(False)
@@ -333,10 +462,10 @@ class GoNogoBehaviorMat(BehaviorMat):
 
     def d_prime(self):
         # calculate d prime
-        nTrialGo = np.sum(np.logical_or(self.DF['choice']==2, self.DF['choice']==-2))
-        nTrialNoGo = np.sum(np.logical_or(self.DF['choice'] == -1, self.DF['choice'] == 0))
-        Hit_rate = np.sum(self.DF['choice'] == 2) / nTrialGo
-        FA_rate = np.sum(self.DF['choice'] == -1) / nTrialNoGo
+        nTrialGo = np.sum(np.logical_or(self.DF['trialType']==2, self.DF['trialType']==-2))
+        nTrialNoGo = np.sum(np.logical_or(self.DF['trialType'] == -1, self.DF['trialType'] == 0))
+        Hit_rate = np.sum(self.DF['trialType'] == 2) / nTrialGo
+        FA_rate = np.sum(self.DF['trialType'] == -1) / nTrialNoGo
 
 
         d_prime = norm.ppf(self.check_rate(Hit_rate)) - norm.ppf(self.check_rate(FA_rate))
@@ -389,7 +518,9 @@ class GoNogoBehaviorMat(BehaviorMat):
             probeSortedInd = np.where(np.in1d(sortedIndTotal, probeCueInd))[0]
 
             for ss in range(len(numGo)):
-                numGo[ss] = np.sum(np.logical_and(self.DF.sound_num == ss+1, np.logical_or(self.DF.reward == 2, self.DF.reward==-1)))
+                numGo[ss] = np.sum(np.logical_and(self.DF.sound_num == ss + 1,
+                    self.DF.choice == 1))
+
                 sound[ss] = np.sum(self.DF.sound_num == ss+1)
 
             sortednumGo = numGo[sortedInd]
@@ -454,7 +585,6 @@ class GoNogoBehaviorMat(BehaviorMat):
             else:
                 self.saveData['L-fit'] = np.full((3), np.nan)
 
-
     def lick_rate(self, save_path,ifrun):
 
         plotname = os.path.join(save_path, 'lick rate.svg')
@@ -472,14 +602,14 @@ class GoNogoBehaviorMat(BehaviorMat):
             edges = np.arange(0 + binSize / 2, 5 - binSize / 2, binSize)
 
             for tt in range(self.trialN):
-                if self.DF.choice[tt] == 2:
+                if self.DF.trialType[tt] == 2:
                     lickTimesH = np.concatenate((lickTimesH, (np.array(self.DF.licks[tt]) - self.DF.onset[tt])))
                     lickSoundH = np.concatenate((lickSoundH, np.ones(len(np.array(self.DF.licks[tt])))*self.DF.sound_num[tt]))
-                elif self.DF.choice[tt] == -1:
+                elif self.DF.trialType[tt] == -1:
                     lickTimesFA = np.concatenate((lickTimesFA, (np.array(self.DF.licks[tt]) - self.DF.onset[tt])))
                     lickSoundFA = np.concatenate(
                         (lickSoundFA, np.ones(len(np.array(self.DF.licks[tt]))) * self.DF.sound_num[tt]))
-                elif self.DF.choice[tt] == -3:
+                elif self.DF.trialType[tt] == -3:
                     lickTimesProbe = np.concatenate((lickTimesProbe, (np.array(self.DF.licks[tt]) - self.DF.onset[tt])))
                     lickSoundProbe = np.concatenate(
                         (lickSoundProbe, np.ones(len(np.array(self.DF.licks[tt]))) * self.DF.sound_num[tt]))
@@ -492,17 +622,17 @@ class GoNogoBehaviorMat(BehaviorMat):
                 for ssH in range(4):
                     lickRateH[ee,ssH] = sum(
                         np.logical_and(lickTimesH[lickSoundH==(ssH+1)] <= edges[ee] + binSize / 2, lickTimesH[lickSoundH==(ssH+1)] > edges[ee] - binSize / 2)) / (
-                                        binSize * sum(np.logical_and(np.array(self.DF.choice == 2), np.array(self.DF.sound_num)==(ssH+1))))
+                                        binSize * sum(np.logical_and(np.array(self.DF.trialType == 2), np.array(self.DF.sound_num)==(ssH+1))))
                 for ssFA in range(4):
                     lickRateFA[ee, ssFA] = sum(
                         np.logical_and(lickTimesFA[lickSoundFA == (ssFA + 5)] <= edges[ee] + binSize / 2,
                                        lickTimesFA[lickSoundFA == (ssFA + 5)] > edges[ee] - binSize / 2)) / (
-                                                 binSize * sum(np.logical_and(np.array(self.DF.choice == -1),
+                                                 binSize * sum(np.logical_and(np.array(self.DF.trialType == -1),
                                                                               np.array(self.DF.sound_num) == (ssFA + 5))))
                 for ssProbe in range(8):
                     lickRateProbe[ee, ssProbe] = sum(np.logical_and(lickTimesProbe[lickSoundProbe == (ssProbe + 9)] <= edges[ee] + binSize / 2,
                                        lickTimesProbe[lickSoundProbe == (ssProbe + 9)] > edges[ee] - binSize / 2)) / (
-                                                   binSize * sum(np.logical_and(np.array(self.DF.choice == -3),
+                                                   binSize * sum(np.logical_and(np.array(self.DF.trialType == -3),
                                                                                 np.array(self.DF.sound_num) == (ssProbe + 9))))
 
             # save data
@@ -563,8 +693,8 @@ class GoNogoBehaviorMat(BehaviorMat):
 
             # plot the response time distribution in hit/false alarm trials
             rtPlot = StartPlots()
-            rtHit, bins, _ = rtPlot.ax.hist(rt[np.array(self.DF.choice) == 2], bins=100, range=[0, 0.5], density=True)
-            rtFA, _, _ = rtPlot.ax.hist(rt[np.array(self.DF.choice) == -1], bins=bins, density=True)
+            rtHit, bins, _ = rtPlot.ax.hist(rt[np.array(self.DF.trialType) == 2], bins=100, range=[0, 0.5], density=True)
+            rtFA, _, _ = rtPlot.ax.hist(rt[np.array(self.DF.trialType) == -1], bins=bins, density=True)
             #_ = rtPlot.ax.hist(rt[np.array(self.DF.choice) == -3], bins=bins, density=True)
 
             # save the data
@@ -609,19 +739,19 @@ class GoNogoBehaviorMat(BehaviorMat):
             ITIFA = []  # lick rage for False alarm trials
             ITIProbe = []
 
-            ITISoundH = np.array(self.DF.sound_num[np.logical_and(self.DF.reward==2, self.DF.trial!=self.trialN)])
-            ITISoundFA = np.array(self.DF.sound_num[np.logical_and(self.DF.reward==-1,self.DF.trial!=self.trialN)])
+            ITISoundH = np.array(self.DF.sound_num[np.logical_and(self.DF.trialType==2, self.DF.trial!=self.trialN)])
+            ITISoundFA = np.array(self.DF.sound_num[np.logical_and(self.DF.trialType==-1,self.DF.trial!=self.trialN)])
 
             binSize = 0.05  # use a 0.05s window for lick rate
             edges = np.arange(0 + binSize / 2, 20- binSize / 2, binSize)
 
             for tt in range(self.trialN-1):
-                if self.DF.reward[tt] == 2:
+                if self.DF.trialType[tt] == 2:
 
                     ITIH.append(self.DF.onset[tt+1] - self.DF.outcome[tt])
 
 
-                elif self.DF.reward[tt] == -1:
+                elif self.DF.trialType[tt] == -1:
                     ITIFA.append(self.DF.onset[tt+1] - self.DF.outcome[tt])
 
 
@@ -674,6 +804,7 @@ class GoNogoBehaviorMat(BehaviorMat):
             # plt.subplots_adjust(top=0.85)
             # plt.show()
 
+
     def running_aligned(self, aligned_to, save_path, ifrun):
         """
         aligned_to: reference time point. onset/outcome/lick
@@ -699,12 +830,12 @@ class GoNogoBehaviorMat(BehaviorMat):
                             run_aligned[:,tt] = y_interp
 
                         # bootstrap
-                    BootH = bootstrap(run_aligned[:, self.DF.choice == 2], dim=1, dim0 = len(interpT),n_sample=numBoot)
-                    BootFA = bootstrap(run_aligned[:, self.DF.choice == -1], dim=1, dim0 = len(interpT),n_sample=numBoot)
-                    BootMiss = bootstrap(run_aligned[:, self.DF.choice == -2], dim=1, dim0 = len(interpT),n_sample=numBoot)
-                    BootCorRej = bootstrap(run_aligned[:, self.DF.choice == 0], dim=1, dim0 = len(interpT),n_sample=numBoot)
-                    BootProbeLick = bootstrap(run_aligned[:, self.DF.choice == -3], dim=1, dim0 = len(interpT),n_sample=numBoot)
-                    BootProbeNoLick = bootstrap(run_aligned[:, self.DF.choice == -4], dim=1, dim0 = len(interpT),n_sample=numBoot)
+                    BootH = bootstrap(run_aligned[:, self.DF.trialType == 2], dim=1, dim0 = len(interpT),n_sample=numBoot)
+                    BootFA = bootstrap(run_aligned[:, self.DF.trialType == -1], dim=1, dim0 = len(interpT),n_sample=numBoot)
+                    BootMiss = bootstrap(run_aligned[:, self.DF.trialType == -2], dim=1, dim0 = len(interpT),n_sample=numBoot)
+                    BootCorRej = bootstrap(run_aligned[:, self.DF.trialType == 0], dim=1, dim0 = len(interpT),n_sample=numBoot)
+                    BootProbeLick = bootstrap(run_aligned[:, self.DF.trialType == -3], dim=1, dim0 = len(interpT),n_sample=numBoot)
+                    BootProbeNoLick = bootstrap(run_aligned[:, self.DF.trialType == -4], dim=1, dim0 = len(interpT),n_sample=numBoot)
 
 
                 elif aligned_to == 'outcome':
@@ -718,12 +849,12 @@ class GoNogoBehaviorMat(BehaviorMat):
                             y_interp = np.interp(interpT, t, y)
                             run_aligned[:,tt] = y_interp
                         # bootstrap
-                    BootH = bootstrap(run_aligned[:, self.DF.choice == 2], dim=1, dim0 = len(interpT),n_sample=numBoot)
-                    BootFA = bootstrap(run_aligned[:, self.DF.choice == -1], dim=1, dim0 = len(interpT),n_sample=numBoot)
-                    BootMiss = bootstrap(run_aligned[:, self.DF.choice == -2], dim=1, dim0 = len(interpT),n_sample=numBoot)
-                    BootCorRej = bootstrap(run_aligned[:, self.DF.choice == 0], dim=1, dim0 = len(interpT),n_sample=numBoot)
-                    BootProbeLick = bootstrap(run_aligned[:, self.DF.choice == -3], dim=1, dim0 = len(interpT),n_sample=numBoot)
-                    BootProbeNoLick = bootstrap(run_aligned[:, self.DF.choice == -4], dim=1, dim0 = len(interpT),n_sample=numBoot)
+                    BootH = bootstrap(run_aligned[:, self.DF.trialType == 2], dim=1, dim0 = len(interpT),n_sample=numBoot)
+                    BootFA = bootstrap(run_aligned[:, self.DF.trialType == -1], dim=1, dim0 = len(interpT),n_sample=numBoot)
+                    BootMiss = bootstrap(run_aligned[:, self.DF.trialType == -2], dim=1, dim0 = len(interpT),n_sample=numBoot)
+                    BootCorRej = bootstrap(run_aligned[:, self.DF.trialType == 0], dim=1, dim0 = len(interpT),n_sample=numBoot)
+                    BootProbeLick = bootstrap(run_aligned[:, self.DF.trialType == -3], dim=1, dim0 = len(interpT),n_sample=numBoot)
+                    BootProbeNoLick = bootstrap(run_aligned[:, self.DF.trialType == -4], dim=1, dim0 = len(interpT),n_sample=numBoot)
 
 
                 elif aligned_to == 'licks':
@@ -822,7 +953,7 @@ class GoNogoBehaviorMat(BehaviorMat):
     def concat_data(self, data, outcome):
         # concatenate a list whose elements have different size
         # extract the trials with certain outcome and concatenate the running speed aligned to licks
-        trialInd = [i for i, e in enumerate(self.DF.choice) if e == outcome]
+        trialInd = [i for i, e in enumerate(self.DF.trialType) if e == outcome]
         output = np.array([])
         for tt in trialInd:
             if tt < self.trialN-1:
@@ -882,6 +1013,7 @@ class GoNogoBehaviorSum:
             output_path = self.beh_df.iloc[f]['saved_dir']
             plot_path = os.path.join(output_path, 'beh_plot')
 
+            # x.beh_cut(plot_path)
             # run analysis_beh
             x.d_prime()
 
@@ -912,7 +1044,7 @@ class GoNogoBehaviorSum:
             self.concateChoice[aa] = dict()
             self.concateChoice[aa]['sound'] = []
             self.concateChoice[aa]['session'] = []
-            self.concateChoice[aa]['choice'] = []
+            self.concateChoice[aa]['trialType'] = []
             self.concateChoice[aa]['numSound'] = []
             self.concateChoice[aa]['respT'] = []
             # concatenate files
@@ -934,10 +1066,10 @@ class GoNogoBehaviorSum:
                                                             np.array(my_data['behDF']['sound_num'].values))
                 self.concateChoice[aa]['session'] = np.append(self.concateChoice[aa]['session'],
                                                               np.ones(len(my_data['behDF']['sound_num']))*tempInd)
-                self.concateChoice[aa]['choice'] = np.append(self.concateChoice[aa]['choice'] ,
-                                                             np.array(my_data['behDF']['choice'].values))
+                self.concateChoice[aa]['trialType'] = np.append(self.concateChoice[aa]['trialType'] ,
+                                                             np.array(my_data['behDF']['trialType'].values))
                 self.concateChoice[aa]['respT'] = np.append(self.concateChoice[aa]['respT'] ,
-                                                             my_data['rtbyTrial'])
+                                                              my_data['rtbyTrial'])
                 tempInd = tempInd + 1
 
             # once we have the complete sequence of stimulus presented, determine when a new stiumulus is first introduced
@@ -978,7 +1110,7 @@ class GoNogoBehaviorSum:
 
            # initialize the summary dictionary if it is the first file
             for key in my_data.keys():
-                if not key in ['behDF', 'rtbyTrial', 'psycho-sti'] and not 'run' in key:
+                if not key in ['behFull', 'behDF', 'rtbyTrial', 'psycho-sti'] and not 'run' in key:
                     # ignore the run_aligned for now, until coming up with how to summarize it
 
                     if isinstance(my_data[key], np.ndarray):
@@ -1031,7 +1163,7 @@ class GoNogoBehaviorSum:
             for aa in self.animalList:
 
                 tempInd = np.logical_and(self.concateChoice[aa]['numSound'] > stiNumList[ss], self.concateChoice[aa]['numSound'] <= stiNumList[ss+1])
-                tempChoice = self.concateChoice[aa]['choice'][tempInd]
+                tempChoice = self.concateChoice[aa]['trialType'][tempInd]
 
                 runningdPrime[str(stiNumList[ss+1])][aa] =[]
 
@@ -1231,8 +1363,8 @@ class GoNogoBehaviorSum:
 
                     # all available trials for cues/hit/FA of animal aa
                     cueInd = [idx for idx in range(len(self.concateChoice[aa]['numSound'])) if self.concateChoice[aa]['sound'][idx] in cues]
-                    hitInd = [idx for idx in range(len(self.concateChoice[aa]['choice'])) if self.concateChoice[aa]['choice'][idx] > 0]
-                    FAInd = [idx for idx in range(len(self.concateChoice[aa]['choice'])) if self.concateChoice[aa]['choice'][idx] == -1]
+                    hitInd = [idx for idx in range(len(self.concateChoice[aa]['trialType'])) if self.concateChoice[aa]['trialType'][idx] > 0]
+                    FAInd = [idx for idx in range(len(self.concateChoice[aa]['trialType'])) if self.concateChoice[aa]['trialType'][idx] == -1]
 
                     hitFAIndSet = set(hitInd) | set(FAInd) # combine FA and hit trials to get 50 trial blocks
 
@@ -1247,10 +1379,10 @@ class GoNogoBehaviorSum:
                     nogoProbe = [13,14,15,16]
 
                     if 9 in cues: # if deal with probe trials
-                        hitInd = [idx for idx in range(len(self.concateChoice[aa]['choice'])) if
-                                  (self.concateChoice[aa]['sound'][idx] in goProbe and self.concateChoice[aa]['choice'][idx] == -3)]   # hit here refers to go probe trials
-                        FAInd = [idx for idx in range(len(self.concateChoice[aa]['choice'])) if
-                                 (self.concateChoice[aa]['sound'][idx] in nogoProbe and self.concateChoice[aa]['choice'][idx] == -3)]  # false alarm here refers to nogo probe trials
+                        hitInd = [idx for idx in range(len(self.concateChoice[aa]['trialType'])) if
+                                  (self.concateChoice[aa]['sound'][idx] in goProbe and self.concateChoice[aa]['trialType'][idx] == -3)]   # hit here refers to go probe trials
+                        FAInd = [idx for idx in range(len(self.concateChoice[aa]['trialType'])) if
+                                 (self.concateChoice[aa]['sound'][idx] in nogoProbe and self.concateChoice[aa]['trialType'][idx] == -3)]  # false alarm here refers to nogo probe trials
 
                         hitFAIndSet = set(hitInd) | set(FAInd)  # combine FA and hit trials to get 50 trial blocks
 
@@ -1572,7 +1704,6 @@ class GoNogoBehaviorSum:
         mc = pairwise_tukeyhsd(anova_data['respT'], anova_data['age'] + anova_data['response'])
         print(mc)
 
-
     def plot_psycho(self, save_path):
         # for different stages, plot the average psychometric curve for adult and juvenile animal separately
         # need to get last 3 sessions for all animals (suppose to be more stable
@@ -1730,39 +1861,44 @@ class GoNogoBehaviorSum:
         return rate
 
 if __name__ == "__main__":
-    # animal = 'JUV011'
-    # session = '211215'
-    # #input_folder = "C:\\Users\\hongl\\Documents\\GitHub\\madeline_go_nogo\\data"
-    # input_folder = "C:\\Users\\xiachong\\Documents\\GitHub\\madeline_go_nogo\\data"
-    # input_file = "JUV015_220409_behaviorLOG.mat"
-    # x = GoNogoBehaviorMat(animal, session, os.path.join(input_folder, input_file))
-    # x.to_df()
-    # output_file = r"C:\Users\xiachong\Documents\GitHub\madeline_go_nogo\data\JUV015_220409_behavior_output"
-    # #output_file = r"C:\\Users\\hongl\\Documents\\GitHub\\madeline_go_nogo\\data\JUV015_220409_behavior_output"
-    # x.output_df(output_file)
-    # #x.d_prime()
+    # test single session
+    animal = 'JUV015'
+    session = '220409'
+    input_path = r'Z:\HongliWang\Madeline\processed_behavior\JUV015\JUV015-220409-behaviorLOG.mat'
+    x = GoNogoBehaviorMat(animal, session, input_path)
+    x.to_df()
     #
+    output_path = r'Z:\HongliWang\Madeline\analysis\behavior\JUV015\220409'
+    plot_path = os.path.join(output_path, 'beh_plot')
+    # x.beh_cut(plot_path)
+
+    ifrun = True
+    x.beh_session(plot_path, ifrun)
+    x.psycho_curve(plot_path, ifrun)
+    x.response_time(plot_path, ifrun)
+    x.lick_rate(plot_path, ifrun)
+    x.ITI_distribution(plot_path, ifrun)
+    x.running_aligned('onset',plot_path, ifrun)
     # # test code for plot
     #
-    # # x.psycho_curve()
-    # #x.response_time()
-    # # x.lick_rate()
-    # #x.ITI_distribution()
-    # x.running_aligned('onset')
+    x.save_analysis(output_path,ifrun)
+
+
     root_dir = r'Z:\HongliWang\Madeline'
     beh_sum = GoNogoBehaviorSum(root_dir)
-    #matplotlib.use('Agg')
-    #beh_sum.process_singleSession(ifrun=True)
+    # matplotlib.use('Agg')
+    beh_sum.process_singleSession(ifrun=True)
     beh_sum.read_data()
 
-    savefigpath = os.path.join(root_dir,'summary','behavior')
+    matplotlib.use('QtAgg')
+    savefigpath = os.path.join(root_dir, 'summary', 'behavior')
     beh_sum.plot_dP(savefigpath)
-    #beh_sum.plot_rt([1,2,3,4,5,6,7,8],savefigpath)
-    #beh_sum.plot_rt([1, 8], savefigpath)
-    #beh_sum.plot_rt([2,7], savefigpath)
-    #beh_sum.plot_rt([3, 6], savefigpath)
-    #beh_sum.plot_rt([4, 5], savefigpath)
+    beh_sum.plot_rt([1, 2, 3, 4, 5, 6, 7, 8], savefigpath)
+    beh_sum.plot_rt([1, 8], savefigpath)
+    beh_sum.plot_rt([2, 7], savefigpath)
+    beh_sum.plot_rt([3, 6], savefigpath)
+    beh_sum.plot_rt([4, 5], savefigpath)
     beh_sum.plot_rt([9,10,11,12,13,14,15,16], savefigpath)
-    #beh_sum.plot_psycho(savefigpath)
+    beh_sum.plot_psycho(savefigpath)
     matplotlib.use('QtAgg')
     x=1
