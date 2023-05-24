@@ -1196,6 +1196,8 @@ class fluoAnalysis:
 
     def clusering(self):
         # hierachical clustering
+        # cluster pure neural activity? cluster average neural activity in different trials?
+        # cluster correlation coefficient?
         pass
 
 if __name__ == "__main__":

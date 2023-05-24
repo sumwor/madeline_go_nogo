@@ -286,6 +286,7 @@ class GoNogoBehaviorMat(BehaviorMat):
         return result_df
 
     def beh_cut(self, save_path):
+        # obslete
         # animals stop to engage in the task in some sessions
         # should only apply in later session???
         # calculate the running d-prime and detect change point, then delete the
@@ -1012,7 +1013,7 @@ class GoNogoBehaviorSum:
             output_path = self.beh_df.iloc[f]['saved_dir']
             plot_path = os.path.join(output_path, 'beh_plot')
 
-            x.beh_cut(plot_path)
+            # x.beh_cut(plot_path)
             # run analysis_beh
             x.d_prime()
 
@@ -1869,7 +1870,7 @@ if __name__ == "__main__":
     #
     output_path = r'Z:\HongliWang\Madeline\analysis\behavior\JUV015\220409'
     plot_path = os.path.join(output_path, 'beh_plot')
-    x.beh_cut(plot_path)
+    # x.beh_cut(plot_path)
 
     ifrun = True
     x.beh_session(plot_path, ifrun)
@@ -1881,10 +1882,12 @@ if __name__ == "__main__":
     # # test code for plot
     #
     x.save_analysis(output_path,ifrun)
+
+
     root_dir = r'Z:\HongliWang\Madeline'
     beh_sum = GoNogoBehaviorSum(root_dir)
     # matplotlib.use('Agg')
-    # beh_sum.process_singleSession(ifrun=True)
+    beh_sum.process_singleSession(ifrun=True)
     beh_sum.read_data()
 
     matplotlib.use('QtAgg')
