@@ -1864,7 +1864,7 @@ if __name__ == "__main__":
     # test single session
     animal = 'JUV015'
     session = '220409'
-    input_path = r'Z:\HongliWang\Madeline\processed_behavior\JUV015\JUV015-220409-behaviorLOG.mat'
+    input_path = r'Z:\Madeline\processed_data\JUV022\230127\JUV022_230127_behaviorLOG.mat'
     x = GoNogoBehaviorMat(animal, session, input_path)
     x.to_df()
     #

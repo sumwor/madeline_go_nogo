@@ -41,3 +41,21 @@ def bootstrap(data, dim, dim0, n_sample=1000):
     bootRes = pd.DataFrame(tempData, index)
 
     return bootRes
+
+def count_consecutive(listx):
+    # count largest number of consecutive 1s in a given list
+    count1 = 0
+    maxConsec1 = 0
+    for ii in range(len(listx)):
+        if listx[ii] == 1:
+            count1 = count1+1
+            if count1 > maxConsec1:
+                maxConsec1 = count1
+        else:
+            count1 = 0
+
+    return maxConsec1
+
+if __name__ == "__main__":
+    x = [1, 1, 1, 0, 0, 1, 0, 0, 1, 0,1, 1,1,1,1,0,1]
+    print(count_consecutive(x))
