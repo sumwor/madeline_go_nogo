@@ -120,7 +120,7 @@ class ScopeSeries:
                 sig_scores[roi] = sig_score
         return sig_scores
 
-def robust_filter(ys, method=12, window=200, optimize_window=2, buffer=False):
+def robust_filter(ys, method=11.5, window=25, optimize_window=50, buffer=False):
     """
     First 2 * windows re-estimate with mode filter
     To avoid edge effects as beginning, it uses mode filter; better solution: specify initial conditions
