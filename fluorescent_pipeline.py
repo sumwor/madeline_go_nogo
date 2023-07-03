@@ -501,7 +501,7 @@ class fluoAnalysis:
 
         n_jobs = -1
 
-        # Parallelize the loop over `trial`
+        # Parallelize the loop over timestep
         results = Parallel(n_jobs=n_jobs, backend='multiprocessing')(
             delayed(self.run_MLR)(X[:,:,tt],y[:,:,tt]) for tt in
             tqdm(range(len(regr_time))))
@@ -1180,6 +1180,7 @@ if __name__ == "__main__":
               'r(n+1)', 'r(n)', 'r(n-1)', 'x(n+1)', 'x(n)', 'x(n-1)', 'speed', 'lick']
     X, y, regr_time = analysis.linear_model(n_predictors)
     saveDataPath = r'C:\\Users\\linda\\Documents\\GitHub\\madeline_go_nogo\\data\\MLR.pickle'
+    # run MLR; omit trials without fluorescent data
     MLRResult = analysis.linear_regr(X[:,1:-2,:], y[:,1:-2,:], regr_time, saveDataPath)
     analysis.plotMLRResult(MLRResult, labels, saveFigPath)
 
