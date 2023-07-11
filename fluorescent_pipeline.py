@@ -6,7 +6,7 @@ from tqdm import tqdm
 from joblib import Parallel, delayed
 import statsmodels.api as sm
 from pyPlotHW import *
-from utility_HW import bootstrap
+from utility_HW import bootstrap, count_consecutive
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 import matplotlib
@@ -384,7 +384,7 @@ class fluoAnalysis:
 
     def process_X(self, regr_time, choiceList, rewardList, nTrials, nCells, trial):
         # re-arrange the behavior and dFF data for linear regression
-        X = np.zeros((13,len(regr_time)))
+        X = np.zeros((14,len(regr_time)))
         #
         Y = np.zeros((nCells, len(regr_time)))
 
@@ -421,8 +421,9 @@ class fluoAnalysis:
         X[10, :] = X[4, :] * X[7, :]
         X[11, :] = X[5, :] * X[8, :]
 
-        # running speed
+        # running speed and licks
         tStep = np.nanmean(np.diff(regr_time))
+        licks = self.beh['licks'][trial]
 
         for tt in range(len(regr_time)):
             t_start = regr_time[tt] - tStep / 2
@@ -430,6 +431,9 @@ class fluoAnalysis:
             temp_run = self.run_aligned[:, trial]
             X[12, tt] = np.nanmean(
                 temp_run[np.logical_and(self.interpT > t_start, self.interpT <= t_end)])
+
+            X[13, tt] = np.sum(np.logical_and(licks>=t_start+self.beh['onset'][trial],
+                                              licks<t_end+self.beh['onset'][trial]))
 
             # dependent variable: dFF
             for cc in range(nCells):
@@ -497,7 +501,7 @@ class fluoAnalysis:
 
         n_jobs = -1
 
-        # Parallelize the loop over `trial`
+        # Parallelize the loop over timestep
         results = Parallel(n_jobs=n_jobs, backend='multiprocessing')(
             delayed(self.run_MLR)(X[:,:,tt],y[:,:,tt]) for tt in
             tqdm(range(len(regr_time))))
@@ -506,12 +510,32 @@ class fluoAnalysis:
             MLRResult['coeff'][:,tt,:], MLRResult['pval'][:,tt,:], MLRResult['r2'][tt,:] = results[tt]
 
         MLRResult['regr_time'] = regr_time
+
+        # determine significant cells (for current stimulus, choice, outcome)
+        # criteria: 3 consecutive significant time points, or 10 total significant time points
+        sigCells = {}
+        sigCells['stimulus'] = []
+        sigCells['choice'] = []
+        sigCells['outcome'] = []
+        pThresh = 0.01
+        for cc in range(nCells):
+            stiPVal = MLRResult['pval'][1,:,cc]
+            choicePVal = MLRResult['pval'][4,:,cc]
+            outcomePVal = MLRResult['pval'][7,:,cc]
+            if sum(stiPVal<0.01) >= 10 or count_consecutive(stiPVal<0.01)>=3:
+                sigCells['stimulus'].append(cc)
+            if sum(choicePVal < 0.01) >= 10 or count_consecutive(choicePVal < 0.01) >= 3:
+                sigCells['choice'].append(cc)
+            if sum(outcomePVal < 0.01) >= 10 or count_consecutive(outcomePVal < 0.01) >= 3:
+                sigCells['outcome'].append(cc)
+
+        MLRResult['sigCells'] = sigCells
         with open(saveDataPath, 'wb') as pf:
             pickle.dump(MLRResult, pf, protocol=pickle.HIGHEST_PROTOCOL)
             pf.close()
         return MLRResult
 
-    def plotMLRResult(self, MLRResult, labels, saveFigPath):
+    def plotMLRResult(self, MLRResult, labels, neuroRaw, saveFigPath):
         # get the average coefficient plot and fraction of significant neurons
         varList =labels
         # average coefficient
@@ -573,8 +597,48 @@ class fluoAnalysis:
         r2Plot.save_plot('R-square.tif', 'tiff', saveFigPath)
 
 
-    def saveMLRResult(self, MLRResult):
-        pass
+        """plot significant neurons"""
+        sigCells = MLRResult['sigCells']
+        cellstat = []
+        for cell in range(neuronRaw.Fraw.shape[0]):
+            if neuronRaw.cells[cell, 0] > 0:
+                cellstat.append(neuronRaw.stat[cell])
+
+        fluoCellPlot = StartPlots()
+        im = np.zeros((256, 256,3))
+
+        #for cell in range(decode_results[var]['importance'].shape[0]):
+        for cell in range(len(cellstat)):
+            xs = cellstat[cell]['xpix']
+            ys = cellstat[cell]['ypix']
+            if cell not in \
+                    set(sigCells['choice'])|set(sigCells['outcome'])|set(sigCells['stimulus']):
+                im[ys, xs] = [0.7, 0.7, 0.7]
+
+        for cell in sigCells['choice']:
+            xs = cellstat[cell]['xpix']
+            ys = cellstat[cell]['ypix']
+                #im[ys,xs] = [0,0,0]
+            im[ys, xs] = np.add(im[ys, xs], [1.0, 0.0, 0.0])
+        for cell in sigCells['outcome']:
+            xs = cellstat[cell]['xpix']
+            ys = cellstat[cell]['ypix']
+                #im[ys, xs] = [0, 0, 0]
+            im[ys,xs] = np.add(im[ys,xs],[0.0,1.0,0.0])
+        for cell in sigCells['stimulus']:
+            xs = cellstat[cell]['xpix']
+            ys = cellstat[cell]['ypix']
+                #im[ys, xs] = [0, 0, 0]
+            im[ys,xs] = np.add(im[ys,xs],[0.0,0.0,1.0])
+        action_patch = mpatches.Patch(color=(1,0,0), label='Action')
+        outcome_patch = mpatches.Patch(color=(0,1,0), label = 'Outcome')
+        stimulus_patch = mpatches.Patch(color=(0, 0, 1), label='Stimulus')
+        # Create a custom legend with the green patch
+        plt.legend(handles=[action_patch, outcome_patch, stimulus_patch],loc='center left',bbox_to_anchor=(1, 0.5))
+        fluoCellPlot.ax.imshow(im, cmap='CMRmap')
+        plt.show()
+
+        fluoCellPlot.save_plot('Regression neuron coordinates.tiff', 'tiff', saveFigPath)
 
     def run_MLR(self, x, y):
         # running individual MLR for parallel computing
@@ -1066,134 +1130,6 @@ class fluoAnalysis:
         return X_train,y_train, X_test, y_test
 
 
-    def get_dpca(self, signal, var, regr_time):
-        """
-        PCA analysis on calcium data
-        demixed PCA
-        signal: shape [numCells, time_bin, stim, action]
-        # python code not working, output the data for dPCA in matlab?
-        referece: https://pietromarchesi.net/pca-neural-data.html#theforms
-        PCA averaged-concatenated (hybrid) form
-        """
-
-        # prepare the signal for dpca input
-        nVars = var.keys()
-        nCells = signal.shape[0]
-        nTimeBins = signal.shape[2]
-        nTrials = signal.shape[1]
-        trialInd = np.arange(nTrials)
-        signal_pca = []
-        # for the last two dimensions
-        # (0, 0): nogo+nolick; (0, 1): nogo+lick
-        # (1, 0): go+miss; (1,1): go+lick
-        hitTrials = trialInd[np.logical_and(var['stim']==1, var['action']==1)]
-        FATrials = trialInd[np.logical_and(var['stim']==0, var['action']==1)]
-        CorRejTrials = trialInd[np.logical_and(var['stim']==0, var['action']==0)]
-        missTrials = trialInd[np.logical_and(var['stim']==1, var['action']==0)]
-        signal_pca.append(np.mean(signal[:,hitTrials,:],1))
-        signal_pca.append(np.mean(signal[:, FATrials, :], 1))
-        signal_pca.append(np.mean(signal[:, CorRejTrials, :], 1))
-        signal_pca.append(np.mean(signal[:, missTrials, :], 1))
-
-        signal_ave = np.hstack(signal_pca)
-
-        # z-score the average df/f
-        ss = StandardScaler(with_mean=True, with_std=True)
-        signal_ave_sc = ss.fit_transform(signal_ave.T).T
-
-        n_components = 15
-        pca = PCA(n_components=n_components)
-        pca.fit(signal_ave_sc.T)
-
-        # plot amount of variance explained?
-
-        # project individual trials to fitted PCA
-        projected_trials = []
-        signal_sc = np.zeros((signal.shape[0], signal.shape[1], signal.shape[2]))
-        for tt in range(signal.shape[1]):
-            signal_sc[:,tt,:] = ss.transform(signal[:,tt,:].T).T
-            proj_trial = pca.transform(signal_sc[:,tt,:].T).T
-            projected_trials.append(proj_trial)
-        trial_types = ['Hit', 'FA', 'CorRej', 'Miss']
-        gt = {comp: {t_type: [] for t_type in trial_types}
-              for comp in range(n_components)}
-
-        for comp in range(n_components):
-            for t in hitTrials:
-                tt = projected_trials[t][comp,:]
-                gt[comp]['Hit'].append(tt)
-            for t in FATrials:
-                tt = projected_trials[t][comp,:]
-                gt[comp]['FA'].append(tt)
-            for t in CorRejTrials:
-                tt = projected_trials[t][comp,:]
-                gt[comp]['CorRej'].append(tt)
-            for t in missTrials:
-                tt = projected_trials[t][comp,:]
-                gt[comp]['Miss'].append(tt)
-
-
-            '''use own plot function, include bootstrap CIs'''
-            pal = sns.color_palette('husl', 4)
-            f, axes = plt.subplots(1, 3, figsize=[10, 2.8], sharey=True, sharex=True)
-            for comp in range(3):
-                ax = axes[comp]
-                for t, t_type in enumerate(trial_types):
-                    #sns.tsplot(gt[comp][t_type], time=regr_time, ax=ax,
-                    #           err_style='ci_band',
-                    #           ci=95,
-                    #           color=pal[t])
-                    ax.plot(regr_time,np.mean(gt[comp][t_type],0))
-                #add_stim_to_plot(ax)
-                ax.set_ylabel('PC {}'.format(comp + 1))
-            axes[1].set_xlabel('Time (s)')
-            sns.despine(right=True, top=True)
-            #add_orientation_legend(axes[2])
-
-            '''3d PCA projections'''
-            ave_pca = PCA(n_components = 3)
-            signal_ave_p = ave_pca.fit_transform(signal_ave_sc.T).T
-
-            component_x = 0
-            component_y = 1
-            component_z = 2
-
-            sigma = 3 # smoothing param
-
-            fig = plt.figure(figsize=[9,4])
-            ax = fig.add_subplot(1,1,1, projection='3d')
-            ax.set_xticks([])
-            ax.set_yticks([])
-            ax.set_zticks([])
-            ax.xaxis.pane.fill = False
-            ax.yaxis.pane.fill = False
-            ax.zaxis.pane.fill = False
-            ax.xaxis.pane.set_edgecolor('w')
-            ax.yaxis.pane.set_edgecolor('w')
-            ax.zaxis.pane.set_edgecolor('w')
-            ax.set_xlabel('PC 1')
-            ax.set_ylabel('PC 2')
-            ax.set_zlabel('PC 3')
-
-            trial_size = len(regr_time)
-            for t, t_type in enumerate(trial_types):
-                x = signal_ave_p[component_x, t * trial_size :(t+1) * trial_size]
-                y = signal_ave_p[component_y, t * trial_size :(t+1) * trial_size]
-                z = signal_ave_p[component_z, t * trial_size :(t+1) * trial_size]
-
-                # apply some smoothing to the trajectories
-                x = gaussian_filter1d(x, sigma=sigma)
-                y = gaussian_filter1d(y, sigma=sigma)
-                z = gaussian_filter1d(z, sigma=sigma)
-
-                # use the mask to plot stimulus and pre/post stimulus separately
-
-                ax.plot(x, y, z, c=pal[t])
-
-                # plot dots at initial point
-                #ax.scatter(x[0], y[0], z[0], c=pal[t], s=25)
-
-
     def clusering(self):
         # hierachical clustering
         # cluster pure neural activity? cluster average neural activity in different trials?
@@ -1237,11 +1173,16 @@ if __name__ == "__main__":
 
     # build multiple linear regression
     # arrange the independent variables
+    saveFigPath = r'C:\Users\linda\Documents\GitHub\madeline_go_nogo\data\fluo_plot'
 
-    n_predictors = 13
+    n_predictors = 14
     labels = ['s(n+1)','s(n)', 's(n-1)','c(n+1)', 'c(n)', 'c(n-1)',
-              'r(n+1)', 'r(n)', 'r(n-1)', 'x(n+1)', 'x(n)', 'x(n-1)', 'speed']
+              'r(n+1)', 'r(n)', 'r(n-1)', 'x(n+1)', 'x(n)', 'x(n-1)', 'speed', 'lick']
     X, y, regr_time = analysis.linear_model(n_predictors)
+    saveDataPath = r'C:\\Users\\linda\\Documents\\GitHub\\madeline_go_nogo\\data\\MLR.pickle'
+    # run MLR; omit trials without fluorescent data
+    MLRResult = analysis.linear_regr(X[:,1:-2,:], y[:,1:-2,:], regr_time, saveDataPath)
+    analysis.plotMLRResult(MLRResult, labels, saveFigPath)
 
     # for decoding
     # decode for action/outcome/stimulus
@@ -1278,13 +1219,11 @@ if __name__ == "__main__":
     classifier = "RandomForest"
     varList = ['action','outcome','stimulus']
     saveDataPath = r'C:\Users\linda\Documents\GitHub\madeline_go_nogo\data\decode.pickle'
-    saveFigPath = r'C:\Users\linda\Documents\GitHub\madeline_go_nogo\data\fluo_plot'
+
     #decode_results = analysis.decoding(decodeSig, decodeVar, varList, trialMask,subTrialMask, classifier, regr_time, saveDataPath)
     neuronRaw = gn_series
 
-    saveDataPath = r'C:\\Users\\linda\\Documents\\GitHub\\madeline_go_nogo\\data\\MLR.pickle'
-    MLRResult = analysis.linear_regr(X[:,1:-2,:], y[:,1:-2,:], regr_time, saveDataPath)
-    analysis.plotMLRResult(MLRResult, labels, saveFigPath)
+
     # train decode model on whole dataset, use it to decode FA trials later
 
     # conditions to decode:
