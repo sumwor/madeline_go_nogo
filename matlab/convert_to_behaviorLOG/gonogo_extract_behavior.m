@@ -4,10 +4,10 @@ function [out] = gonogo_extract_behavior(input, output, cutoff)
     if ~exist(output, 'dir')
         mkdir(output);
     end
-    behav_log = fullfile(output, [input(44:57), 'behaviorLOG.mat']);
+    %behav_log = fullfile(output, [input(44:57), 'behaviorLOG.mat']);
     %if ~exist(behav_log, 'file')
         out = get_Headfix_GoNo_EventTimes(input, output);
-        out.cutoff = cutoff
-        save(behav_log, '-v7.3', 'out');
+        out.cutoff = cutoff;
+    %    save(behav_log, '-v7.3', 'out');
     %end
 end

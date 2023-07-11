@@ -63,7 +63,7 @@ if nargin ==2
             data = [];
         end 
     end
-    output = varargin{2}
+    output = varargin{2};
 else
     disp('Please specify an exper filename in string');
     eval('help get_Headfix_GoNo_EventTimes');

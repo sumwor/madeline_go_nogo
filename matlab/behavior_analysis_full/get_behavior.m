@@ -1,14 +1,13 @@
-function [dprimes, lickrate, session_info] = get_behavior(animal_folder, output)
+function [dprimes, lickrate, session_info, out] = get_behavior(animal_folder, output)
 
-%num_bins = 4;
-session_files = dir(strcat(animal_folder,'/*.mat'));
-%files_processed = [];
+
+session_files = dir(fullfile(animal_folder,'*.mat'));
 
 for day = 1:size(session_files,1) 
 
     day_file = session_files(day).name; 
     session = ['session' num2str(day)];
-    load(fullfile(animal_folder,day_file));
+    exper = load(fullfile(animal_folder,day_file));
     num_trials_old = exper.headfix_sound_gong.param.countedtrial.value;
 
     [adj_behav, adj_cues, adj_trials] = remove_disengaged_trials(day_file, ...
@@ -20,8 +19,8 @@ for day = 1:size(session_files,1)
     %% old pipeline to generate behavior LOG.mat for python process
 
     input = fullfile(animal_folder,day_file);
-    cutoff = length(adj_trials)
-    [~] = gonogo_extract_behavior(input, output, cutoff);
+    cutoff =adj_trials;
+    [out] = gonogo_extract_behavior(input, output, cutoff);
 
 
     %% behavior analysis
@@ -38,6 +37,16 @@ for day = 1:size(session_files,1)
     lickrate.go_hard(day) = nanmean(licking(3:4));
     lickrate.nogo_hard(day) = nanmean(licking(5:6));
     lickrate.nogo_easy(day) = nanmean(licking(7:8));
+
+    beh.dprimes = dprimes(day);
+    beh.licks = lickrate(day);
+    beh.info = session_info;
+    beh.out = out;
+
+        % save the struct
+    behav_log = fullfile(animal_output, [input(44:57), 'behaviorLOG.mat']);
+
+    save(behav_log, '-v7.3', 'out');
 
 end 
 
