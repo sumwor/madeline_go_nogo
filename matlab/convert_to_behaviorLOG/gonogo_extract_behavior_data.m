@@ -1,0 +1,32 @@
+input_folder = 'Z:\HongliWang\Madeline\raw_behavior'
+output_folder = 'Z:\HongliWang\Madeline\processed_behavior'
+
+folderList = dir(input_folder);
+
+for ii = 1:length(folderList)
+   if ~(strcmp(folderList(ii).name, '.') || strcmp(folderList(ii).name, '..'))
+       animal = folderList(ii).name;
+       output_dir = fullfile(output_folder, animal);
+       matFiles = dir(fullfile(folderList(ii).folder, folderList(ii).name,'*.mat'));
+       for jj = 1:length(matFiles)
+           input = fullfile(matFiles(jj).folder, matFiles(jj).name);
+           [~] = gonogo_extract_behavior(input, output_dir);
+       end
+   end
+           
+end
+
+function [out] = gonogo_extract_behavior(input, output)
+    % (folder, animal, session) -> filename of the behavior_raw  fullfile
+    %filename = fullfile(folder, 'raw_behavior/to_process', animal, session);
+    if ~exist(output, 'dir')
+        mkdir(output);
+    end
+    behav_log = fullfile(output, [input(44:56), '-behaviorLOG.mat']);
+    %if ~exist(behav_log, 'file')
+       out = get_Headfix_GoNo_EventTimes(input, output);
+       save(behav_log, '-v7.3', 'out');
+    %else
+    %    out = [];
+    %end
+end
