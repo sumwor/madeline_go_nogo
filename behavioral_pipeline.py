@@ -105,8 +105,14 @@ class GoNogoBehaviorMat(BehaviorMat):
         self.hfile = h5py.File(hfile, 'r')
         self.animal = animal
         self.session = session
-        self.trialN = len(self.hfile['out/result'])
-        self.eventlist, self.runningSpeed = self.initialize_node()
+        self.trialN = len(self.hfile['beh/out/result'])
+        self.eventlist, self.runningSpeed, \
+            self.cutoff, self.dprime = self.initialize_node()
+
+        if self.cutoff != self.trialN:
+            self.ifCut = True
+        else:
+            self.ifCut = False
 
         # get time_0 (normalize the behavior start time to t=0)
         for node in self.eventlist:
@@ -120,12 +126,12 @@ class GoNogoBehaviorMat(BehaviorMat):
         # get the timestamp for aligning with fluorescent data
         if isinstance(hfile, str):
             with h5py.File(hfile, 'r') as hf:
-                if 'out/frame_time' in hf:
-                    frame_time = np.array(hf['out/frame_time']).ravel()
+                if 'beh/out/frame_time' in hf:
+                    frame_time = np.array(hf['beh/out/frame_time']).ravel()
                 else:
                     frame_time = np.nan
         else:
-            frame_time = np.array(hfile['out/frame_time']).ravel()
+            frame_time = np.array(hfile['beh/out/frame_time']).ravel()
         self.time_aligner = lambda t: frame_time
 
         # a dictionary to save all needed behavior metrics
@@ -134,12 +140,14 @@ class GoNogoBehaviorMat(BehaviorMat):
     def initialize_node(self):
         code_map = self.code_map
         eventlist = EventNode(None, None, None, None)
-        trial_events = np.array(self.hfile['out/GoNG_EventTimes'])
-        if 'out/run_speed' in self.hfile:
-            running_speed = np.array(self.hfile['out/run_speed'])
+        trial_events = np.array(self.hfile['beh/out/GoNG_EventTimes'])
+        if 'beh/out/run_speed' in self.hfile:
+            running_speed = np.array(self.hfile['beh/out/run_speed'])
         else:
             running_speed = [np.nan]
 
+        dprime = self.hfile['beh/dprimes/overall_by_session'][0][0]
+        cutoff = self.hfile['beh/out/cutoff'][0][0]
         exp_complexity = None
         struct_complexity = None
         prev_node = None
@@ -161,7 +169,7 @@ class GoNogoBehaviorMat(BehaviorMat):
             eventlist.append(cnode)
             prev_node = cnode
 
-        return eventlist, running_speed
+        return eventlist, running_speed, cutoff, dprime
 
     def to_df(self):
         columns = ['trial'] + self.fields
@@ -282,6 +290,16 @@ class GoNogoBehaviorMat(BehaviorMat):
         # save the data into self
         self.DF = result_df
         self.saveData['behFull'] = result_df
+
+        if self.ifCut:
+            self.DFFull = self.DF
+            self.DF = self.DF.iloc[0:self.cutoff]
+            self.trialNFull = self.trialN
+            self.trialN = self.cutoff
+
+        self.saveData['ifCut'] = self.ifCut
+        self.saveData['cutoff'] = self.cutoff
+        self.saveData['behDF'] = self.DF
 
         return result_df
 
@@ -966,33 +984,42 @@ class GoNogoBehaviorSum:
 
     def __init__(self,root_dir):
         # start with the root directory, generate beh_df
-        raw_beh = 'processed_behavior'
-        raw_fluo = 'raw_imaging'
 
         # specify saved files
-        analysis_dir = 'analysis'
-        analysis_beh = 'behavior'
+        data_dir = 'Data'
+        analysis_dir = 'Analysis'
+        summary_dir = 'Summary'
 
-        animals = os.listdir(os.path.join(root_dir, raw_beh))
+        animals = os.listdir(os.path.join(root_dir, data_dir))
 
         # initialize the dataframe
-        columns = ['file', 'file_path', 'date', 'subject', 'age', 'saved_dir']
+        columns = ['subject', 'age','date',
+                   'beh_data_path', 'beh_analysis_dir', 'fluo_data_dir','fluo_analysis_dir',
+                   'dprime']
         beh_df = pd.DataFrame(columns=columns)
 
         # go through the files to update the dataframe
+        Ind = 0
         for animal in animals:
-            animal_path = os.path.join(root_dir, raw_beh, animal)
-            sessions = glob.glob(os.path.join(animal_path, animal + '*' + '-behaviorLOG.mat'))
-            Ind = 0
+            animal_path = os.path.join(root_dir, analysis_dir, animal)
+            sessions = os.listdir(animal_path)
+
             for session in sessions:
-                separated = os.path.basename(session).split("-")
+                matFile = glob.glob(os.path.join(animal_path, session, '*.mat'))
+                separated = matFile[0].split(os.sep)
                 data = pd.DataFrame({
-                    'file': os.path.basename(session),
-                    'file_path': session,
-                    'date': separated[1],
                     'subject': animal,
+                    'date': separated[-2],
                     'age': animal[0:3],
-                    'saved_dir': os.path.join(root_dir, analysis_dir, analysis_beh, animal, separated[1])
+                    'beh_data_path': matFile,
+                    'beh_analysis_dir': os.path.join(root_dir, analysis_dir,
+                                                     animal, separated[-2], 'behavior'),
+                    'fluo_data_dir': os.path.join(root_dir, data_dir,
+                                                  animal, separated[-2],'suite2p','plane0'),
+
+                    'fluo_analysis_dir': os.path.join(root_dir, analysis_dir,
+                                              animal, separated[-2],'fluo'),
+                    'dprime': np.nan
                 }, index=[Ind])
                 Ind = Ind + 1
                 beh_df = pd.concat([beh_df, data])
@@ -1000,17 +1027,22 @@ class GoNogoBehaviorSum:
         self.beh_df = beh_df
         self.beh_dict = dict()
 
+
     def process_singleSession(self, ifrun=False):
         # go through individual sessions and run analysis, save data and plot
         # ifrun: if True, run the analysis regardless a file already exist
-        nFiles = len(self.beh_df['file'])
+        nFiles = self.beh_df.shape[0]
         for f in tqdm(range(nFiles)):
             animal = self.beh_df.iloc[f]['subject']
             session = self.beh_df.iloc[f]['date']
-            input_path = self.beh_df.iloc[f]['file_path']
+            input_path = self.beh_df.iloc[f]['beh_data_path']
             x = GoNogoBehaviorMat(animal, session, input_path)
+
+            # update the dprime values in the dataframe
+            self.beh_df.at[f,'dprime'] = x.dprime
+
             x.to_df()
-            output_path = self.beh_df.iloc[f]['saved_dir']
+            output_path = self.beh_df.iloc[f]['beh_analysis_dir']
             plot_path = os.path.join(output_path, 'beh_plot')
 
             # x.beh_cut(plot_path)
@@ -1029,6 +1061,8 @@ class GoNogoBehaviorSum:
 
             plt.close('all')
             x.save_analysis(output_path, ifrun)
+
+
 
     def read_data(self):
         # read all analyzed data of individual sessions and save to a dictionary
@@ -1055,7 +1089,7 @@ class GoNogoBehaviorSum:
             # regardless on how many stimulus it experienced in following sessions
 
             for aInd in animalInd:
-                save_file = os.path.join(self.beh_df.iloc[aInd]['saved_dir'], 'behAnalysis.pickle')
+                save_file = os.path.join(self.beh_df.iloc[aInd]['beh_analysis_dir'], 'behAnalysis.pickle')
                 # load pickle file
                 with open(save_file, 'rb') as pf:
                     # Load the data from the pickle file
@@ -1092,7 +1126,7 @@ class GoNogoBehaviorSum:
 
         # initialize variables
         for ff in tqdm(range(nFiles)):
-            save_file = os.path.join(self.beh_df.iloc[ff]['saved_dir'],'behAnalysis.pickle')
+            save_file = os.path.join(self.beh_df.iloc[ff]['beh_analysis_dir'],'behAnalysis.pickle')
             # load pickle file
             with open(save_file, 'rb') as pf:
                 # Load the data from the pickle file
@@ -1862,43 +1896,46 @@ class GoNogoBehaviorSum:
 
 if __name__ == "__main__":
     # test single session
-    animal = 'JUV015'
-    session = '220409'
-    input_path = r'Z:\Madeline\processed_data\JUV022\230127\JUV022_230127_behaviorLOG.mat'
-    x = GoNogoBehaviorMat(animal, session, input_path)
-    x.to_df()
+    test_single_session = False
+    if test_single_session == True:
+        animal = 'JUV015'
+        session = '220409'
+        input_path = r'Z:\Madeline\processed_data\JUV022\230127\JUV022_230127_behaviorLOG.mat'
+        x = GoNogoBehaviorMat(animal, session, input_path)
+        x.to_df()
     #
-    output_path = r'Z:\HongliWang\Madeline\analysis\behavior\JUV015\220409'
-    plot_path = os.path.join(output_path, 'beh_plot')
+        output_path = r'Z:\HongliWang\Madeline\analysis\behavior\JUV015\220409'
+        plot_path = os.path.join(output_path, 'beh_plot')
     # x.beh_cut(plot_path)
 
-    ifrun = True
-    x.beh_session(plot_path, ifrun)
-    x.psycho_curve(plot_path, ifrun)
-    x.response_time(plot_path, ifrun)
-    x.lick_rate(plot_path, ifrun)
-    x.ITI_distribution(plot_path, ifrun)
-    x.running_aligned('onset',plot_path, ifrun)
+        ifrun = True
+        x.beh_session(plot_path, ifrun)
+        x.psycho_curve(plot_path, ifrun)
+        x.response_time(plot_path, ifrun)
+        x.lick_rate(plot_path, ifrun)
+        x.ITI_distribution(plot_path, ifrun)
+        x.running_aligned('onset',plot_path, ifrun)
     # # test code for plot
     #
-    x.save_analysis(output_path,ifrun)
+        x.save_analysis(output_path,ifrun)
 
-
-    root_dir = r'Z:\HongliWang\Madeline'
-    beh_sum = GoNogoBehaviorSum(root_dir)
+    test_summary = True
+    if test_summary == True:
+        root_dir = r'Z:\HongliWang\Madeline\project'
+        beh_sum = GoNogoBehaviorSum(root_dir)
     # matplotlib.use('Agg')
-    beh_sum.process_singleSession(ifrun=True)
-    beh_sum.read_data()
+        beh_sum.process_singleSession(ifrun=True)
+        beh_sum.read_data()
 
-    matplotlib.use('QtAgg')
-    savefigpath = os.path.join(root_dir, 'summary', 'behavior')
-    beh_sum.plot_dP(savefigpath)
-    beh_sum.plot_rt([1, 2, 3, 4, 5, 6, 7, 8], savefigpath)
-    beh_sum.plot_rt([1, 8], savefigpath)
-    beh_sum.plot_rt([2, 7], savefigpath)
-    beh_sum.plot_rt([3, 6], savefigpath)
-    beh_sum.plot_rt([4, 5], savefigpath)
-    beh_sum.plot_rt([9,10,11,12,13,14,15,16], savefigpath)
-    beh_sum.plot_psycho(savefigpath)
-    matplotlib.use('QtAgg')
-    x=1
+        matplotlib.use('QtAgg')
+        savefigpath = os.path.join(root_dir, 'summary', 'behavior')
+        beh_sum.plot_dP(savefigpath)
+        beh_sum.plot_rt([1, 2, 3, 4, 5, 6, 7, 8], savefigpath)
+        beh_sum.plot_rt([1, 8], savefigpath)
+        beh_sum.plot_rt([2, 7], savefigpath)
+        beh_sum.plot_rt([3, 6], savefigpath)
+        beh_sum.plot_rt([4, 5], savefigpath)
+        beh_sum.plot_rt([9,10,11,12,13,14,15,16], savefigpath)
+        beh_sum.plot_psycho(savefigpath)
+        matplotlib.use('QtAgg')
+        x=1
