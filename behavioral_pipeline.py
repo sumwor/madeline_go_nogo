@@ -69,7 +69,9 @@ class BehaviorMat:
         return NotImplemented
 
     def align_ts2behavior(self, timestamps):
-        return self.time_aligner(timestamps)
+        #t1 = self.time_aligner(timestamps)
+        #t2 = self.time_aligner_new(timestamps)
+        return self.time_aligner_new(timestamps)
 
 
 class GoNogoBehaviorMat(BehaviorMat):
@@ -127,15 +129,29 @@ class GoNogoBehaviorMat(BehaviorMat):
         if isinstance(hfile, str):
             with h5py.File(hfile, 'r') as hf:
                 if 'beh/out/frame_time' in hf:
-                    frame_time = np.array(hf['beh/out/frame_time']).ravel()
+                    self.frame_time = np.array(hf['beh/out/frame_time']).ravel()
                 else:
-                    frame_time = np.nan
+                    self.frame_time = np.nan
         else:
-            frame_time = np.array(hfile['beh/out/frame_time']).ravel()
-        self.time_aligner = lambda t: frame_time
+            self.frame_time = np.array(hfile['beh/out/frame_time']).ravel()
+
+            # check if frame_time shorter than fluorescent time
+        #self.time_aligner = lambda t: self.frame_time
 
         # a dictionary to save all needed behavior metrics
         self.saveData = dict()
+
+    def time_aligner_new(self, t):
+        if len(self.frame_time) < len(t):
+            print("Behavior stamp is ", str(len(t)-len(self.frame_time))," frames shorter")
+        t_aligned = []
+        #print('Hey')
+        for tt in range(len(t)):
+            if tt < len(self.frame_time):
+                t_aligned.append(self.frame_time[tt])
+            else:
+                t_aligned.append(np.nan)
+        return t_aligned
 
     def initialize_node(self):
         code_map = self.code_map
@@ -1061,8 +1077,6 @@ class GoNogoBehaviorSum:
 
             plt.close('all')
             x.save_analysis(output_path, ifrun)
-
-
 
     def read_data(self):
         # read all analyzed data of individual sessions and save to a dictionary

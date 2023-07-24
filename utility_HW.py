@@ -15,6 +15,7 @@ def bootstrap(data, dim, dim0, n_sample=1000):
     n_sample: number of samples for bootstrap. default: 1000
     output:
     bootRes={'bootAve','bootHigh','bootLow'}
+    bootResults: whole matrix of bootstrap results, optional
     """
     # Resample the rows of the matrix with replacement
     if len(data)>0:  # if input data is not empty

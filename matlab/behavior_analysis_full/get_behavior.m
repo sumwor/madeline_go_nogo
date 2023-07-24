@@ -14,8 +14,8 @@ for day = 1:size(sessions,1)
         [adj_behav, adj_cues, adj_trials] = remove_disengaged_trials(day_file, ...
             exper.exper.headfix_sound_gong.param.result.value(1:num_trials_old), ...
             exper.exper.headfix_sound_gong.param.schedule.value(1:num_trials_old));
-        session_info.num_adj_trials(day) = adj_trials;
-        session_info.behavior_level(day) = cumulative_cues(adj_cues);
+        session_info.num_adj_trials(day-2) = adj_trials;
+        session_info.behavior_level(day-2) = cumulative_cues(adj_cues);
 
         %% old pipeline to generate behavior LOG.mat for python process
 
@@ -42,10 +42,31 @@ for day = 1:size(sessions,1)
         lickrate.go_hard(day-2) = nanmean(licking(3:4));
         lickrate.nogo_hard(day-2) = nanmean(licking(5:6));
         lickrate.nogo_easy(day-2) = nanmean(licking(7:8));
+        
+        beh.dprimes = struct;
+        fields = fieldnames(dprimes);
+        for i = 1:numel(fields)
+            field = fields{i};
+            originalArray = dprimes.(field);
+            beh.dprimes.(field) = originalArray(day-2);
+        end
+        
+        beh.licks = struct;
+        fields = fieldnames(lickrate);
+        for i = 2:numel(fields)
+            field = fields{i};
+            originalArray = lickrate.(field);
+            beh.licks.(field) = originalArray(day-2);
+        end
 
-        beh.dprimes = dprimes(day-2);
-        beh.licks = lickrate(day-2);
-        beh.info = session_info;
+        beh.info = struct;
+        fields = fieldnames(session_info);
+        for i = 1:numel(fields)
+            field = fields{i};
+            originalArray = session_info.(field);
+            beh.licks.(field) = originalArray(day-2);
+        end
+
         beh.out = out;
 
         % save the struct

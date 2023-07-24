@@ -7,7 +7,7 @@ import matplotlib
 
 class StartPlots:
     # set figure size
-    plt.rcParams['figure.figsize'] = [15, 15]
+
     # set font
     plt.rcParams["font.family"] = "Arial"
     plt.rcParams["font.size"] = 20
@@ -22,9 +22,9 @@ class StartPlots:
     plt.rcParams['image.cmap'] = 'jet'
     matplotlib.use('Qt5Agg')
 
-    def __init__(self):
+    def __init__(self, figsize=(15,15)):
 
-        self.fig, self.ax = plt.subplots(layout="constrained")
+        self.fig, self.ax = plt.subplots(layout="constrained", figsize= figsize)
 
         # set plot top/right boundaries to invisible
         self.ax.spines['top'].set_visible(False)
@@ -32,7 +32,7 @@ class StartPlots:
 
     def legend(self, leg):
         # add legend
-        legend = self.ax.legend(leg)
+        legend = self.ax.legend(leg, loc='upper right', bbox_to_anchor=(1.2, 1))
         legend.get_frame().set_linewidth(0.0)
         legend.get_frame().set_facecolor('none')
 
@@ -56,16 +56,17 @@ class StartPlots:
 # another class to generate subplots
 class StartSubplots(StartPlots):
 
-    def __init__(self, xdim, ydim, ifSharex=False, ifSharey=False, gridspec_kw=[]):
+    def __init__(self,  xdim, ydim, figsize=(15,15), ifSharex=False, ifSharey=False, gridspec_kw=[]):
         if len(gridspec_kw)>0:
-            self.fig, self.ax = plt.subplots(xdim, ydim,  layout="constrained", sharex=ifSharex,
+            self.fig, self.ax = plt.subplots(xdim, ydim,  layout="constrained",
+                                             figsize=figsize, sharex=ifSharex,
                             sharey=ifSharey,gridspec_kw={'height_ratios': gridspec_kw})
         else:
-            self.fig, self.ax = plt.subplots(xdim, ydim, layout="constrained", sharex=ifSharex,
+            self.fig, self.ax = plt.subplots(xdim, ydim, layout="constrained",
+                                             figsize= figsize, sharex=ifSharex,
                                              sharey=ifSharey)
 
         #plt.tight_layout()
-
         # set plot top/right boundaries to invisible
         if xdim==1 and ydim > 1:
             for yy in range(ydim):

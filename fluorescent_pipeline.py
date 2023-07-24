@@ -9,6 +9,7 @@ from pyPlotHW import *
 from utility_HW import bootstrap, count_consecutive
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
+from mpl_toolkits.mplot3d import Axes3D
 import matplotlib
 from scipy.stats import binomtest
 from behavioral_pipeline import BehaviorMat, GoNogoBehaviorMat
@@ -16,6 +17,7 @@ import os
 from utils_signal import *
 import pickle
 from packages.decodanda_master.decodanda import Decodanda
+import glob
 import seaborn as sns
 
 from scipy.stats import wilcoxon
@@ -38,7 +40,6 @@ warnings.filterwarnings("ignore")
 class Suite2pSeries:
 
     def __init__(self, suite2p):
-        suite2p = os.path.join(suite2p, 'plane0')
         Fraw = np.load(os.path.join(suite2p, 'F.npy'))
         ops = np.load(os.path.join(suite2p, 'ops.npy'), allow_pickle=True)
         neuropil = np.load(os.path.join(suite2p, 'Fneu.npy'))
@@ -50,25 +51,33 @@ class Suite2pSeries:
         self.cells = cells
         self.stat = stat
 
-        F = Fraw - neuropil * 0.7  # subtract neuropil
+    def get_dFF(self, beh_object, savefluopath):
+        if not os.path.exists(savefluopath):
+            F = self.Fraw - self.neuropil * 0.7  # subtract neuropil
         # find number of cells
-        numcells = np.sum(cells[:, 0] == 1.0)
+            numcells = np.sum(self.cells[:, 0] == 1.0)
         # create a new array (Fcells) with F data for each cell
-        Fcells = F[cells[:, 0] == 1.0]
+            Fcells = F[self.cells[:, 0] == 1.0]
 
         # filter the raw fluorscent data, finding the baseline?
-        F0_AQ = np.zeros(Fcells.shape)
-        for cell in range(Fcells.shape[0]):
-            F0_AQ[cell] = robust_filter(Fcells[cell], method=12, window=200, optimize_window=2, buffer=False)[:, 0]
+            F0_AQ = np.zeros(Fcells.shape)
+            for cell in tqdm(range(Fcells.shape[0])):
+                F0_AQ[cell] = robust_filter(Fcells[cell], method=12, window=200, optimize_window=2, buffer=False)[:, 0]
 
-        dFF = np.zeros(Fcells.shape)
-        print("Calculating dFFs........")
-        for cell in tqdm(range(0, Fcells.shape[0])):
-            for frame in range(0, Fcells.shape[1]):
-                dFF[cell, frame] = (Fcells[cell, frame] - F0_AQ[cell, frame]) / F0_AQ[cell, frame]
+            dFF = np.zeros(Fcells.shape)
+            print("Calculating dFFs........")
+            for cell in tqdm(range(0, Fcells.shape[0])):
+                for frame in range(0, Fcells.shape[1]):
+                    dFF[cell, frame] = (Fcells[cell, frame] - F0_AQ[cell, frame]) / F0_AQ[cell, frame]
 
-        self.neural_df = pd.DataFrame(data=dFF.T, columns=[f'neuron{i}' for i in range(numcells)])
-        self.neural_df['time'] = np.arange(self.neural_df.shape[0])
+            self.neural_df = pd.DataFrame(data=dFF.T, columns=[f'neuron{i}' for i in range(numcells)])
+            self.neural_df['time'] = np.arange(self.neural_df.shape[0])
+
+            self.realign_time(beh_object)
+            self.neural_df.to_csv(savefluopath)
+        else:
+            self.neural_df = pd.read_csv(savefluopath)
+            self.neural_df = self.neural_df.drop(self.neural_df.columns[0], axis=1)
 
     def realign_time(self, reference=None):  # need the behavior mat as reference
         if isinstance(reference, BehaviorMat):
@@ -117,7 +126,7 @@ class Suite2pSeries:
         else:
             return dff_df
 
-    def plot_cell_location_dFF(self, neuron_range):
+    def plot_cell_location_dFF(self, neuron_range, savefigpath):
         import random
 
         cellstat = []
@@ -136,18 +145,29 @@ class Suite2pSeries:
 
 
         fluoCellPlot.ax.imshow(im, cmap='CMRmap')
-        plt.show()
+        fluoCellPlot.save_plot('Cells in the field of view.tiff', 'tiff', savefigpath)
+        #plt.show()
+        plt.close()
 
-        return fluoCellPlot
+    def plot_cell_dFF(self, time_range, savefigpath):
 
-    def plot_cell_dFF(self, neuron_range):
+        cellsPerPlot = 32
+        nCells = self.neural_df.shape[1] - 1
+        nFigs = int(np.ceil(nCells/cellsPerPlot))
+        plot_ind = np.arange(self.neural_df.shape[0])[np.logical_and(self.neural_df['time'] >= time_range[0],
+                                                                     self.neural_df['time'] < time_range[1])]
+        for fig in range(nFigs):
+            fluoTracePlot = StartPlots()
+            neuron_range = np.arange(cellsPerPlot*(fig),cellsPerPlot*(fig+1))
+            for cell in neuron_range:
+                if cell < nCells:
+                    fluoTracePlot.ax.plot(self.neural_df.iloc[plot_ind, cell] + cell,
+                                          label="Neuron " + str(cell), linewidth=0.5)
+            #plt.show()
+            title = 'Cell traces # ' + str(fig) + '.tiff'
+            fluoTracePlot.save_plot(title, 'tiff', savefigpath)
+            plt.close()
 
-        fluoTracePlot = StartPlots()
-        for cell in neuron_range:
-            fluoTracePlot.ax.plot(self.neural_df.iloc[15000:20000, cell] + cell, label="Neuron " + str(cell))
-        plt.show()
-
-        return fluoTracePlot
 def robust_filter(ys, method=12, window=200, optimize_window=2, buffer=False):
     """
     First 2 * windows re-estimate with mode filter
@@ -225,6 +245,7 @@ class fluoAnalysis:
     def plot_dFF(self, savefigpath):
         # PSTH plot for different trial types
         # cue
+        matplotlib.use('Agg')
         nCells = self.fluo.shape[1]-2
         goCue = [1, 2, 3, 4]
         noGoCue = [5, 6, 7, 8]
@@ -237,49 +258,50 @@ class fluoAnalysis:
         probeNoGoTrials = [i for i in range(len(self.beh['sound_num'])) if self.beh['sound_num'][i] in probeNoGoCue]
 
         for cc in tqdm(range(nCells)):
-
+            figpath = os.path.join(savefigpath, 'cell' + str(cc) + '.tif')
+            if not os.path.exists(figpath):
             # get dFF in trials and bootstrap
 
-            dFFPlot = StartSubplots(2,2, ifSharey=True)
+                dFFPlot = StartSubplots(2,2, ifSharey=True)
 
             # subplot 1: dFF traces of different cues
 
     ### plotting PSTH for go/nogo/probe cues--------------------------------------------
-            tempGodFF = self.dFF_aligned[:, goTrials, cc]
-            bootGo = bootstrap(tempGodFF, 1, 1000)
+                tempGodFF = self.dFF_aligned[:, goTrials, cc]
+                bootGo = bootstrap(tempGodFF, 1, 1000)
 
-            tempNoGodFF = self.dFF_aligned[:, noGoTrials, cc]
-            bootNoGo = bootstrap(tempNoGodFF, 1, 1000)
+                tempNoGodFF = self.dFF_aligned[:, noGoTrials, cc]
+                bootNoGo = bootstrap(tempNoGodFF, 1, 1000)
 
-            tempProbeGodFF = self.dFF_aligned[:, probeGoTrials, cc]
-            bootProbeGo = bootstrap(tempProbeGodFF, 1, 1000)
+                tempProbeGodFF = self.dFF_aligned[:, probeGoTrials, cc]
+                bootProbeGo = bootstrap(tempProbeGodFF, 1, 1000)
 
-            tempProbeNoGodFF = self.dFF_aligned[:, probeNoGoTrials, cc]
-            bootProbeNoGo = bootstrap(tempProbeNoGodFF, 1, 1000)
+                tempProbeNoGodFF = self.dFF_aligned[:, probeNoGoTrials, cc]
+                bootProbeNoGo = bootstrap(tempProbeNoGodFF, 1, 1000)
 
-            dFFPlot.fig.suptitle('Cell ' + str(cc+1))
+                dFFPlot.fig.suptitle('Cell ' + str(cc+1))
 
-            dFFPlot.ax[0,0].plot(self.interpT, bootGo['bootAve'], color=(1,0,0))
-            dFFPlot.ax[0,0].fill_between(self.interpT, bootGo['bootLow'], bootGo['bootHigh'], color = (1,0,0),label='_nolegend_', alpha=0.2)
+                dFFPlot.ax[0,0].plot(self.interpT, bootGo['bootAve'], color=(1,0,0))
+                dFFPlot.ax[0,0].fill_between(self.interpT, bootGo['bootLow'], bootGo['bootHigh'], color = (1,0,0),label='_nolegend_', alpha=0.2)
 
-            dFFPlot.ax[0, 0].plot(self.interpT, bootNoGo['bootAve'], color=(0, 1, 0))
-            dFFPlot.ax[0, 0].fill_between(self.interpT, bootNoGo['bootLow'], bootNoGo['bootHigh'], color=(0, 1, 0),label='_nolegend_',
+                dFFPlot.ax[0, 0].plot(self.interpT, bootNoGo['bootAve'], color=(0, 1, 0))
+                dFFPlot.ax[0, 0].fill_between(self.interpT, bootNoGo['bootLow'], bootNoGo['bootHigh'], color=(0, 1, 0),label='_nolegend_',
                                           alpha=0.2)
-            dFFPlot.ax[0,0].legend(['Go', 'No go'])
-            dFFPlot.ax[0,0].set_title('Cue')
-            dFFPlot.ax[0,0].set_ylabel('dFF')
+                dFFPlot.ax[0,0].legend(['Go', 'No go'])
+                dFFPlot.ax[0,0].set_title('Cue')
+                dFFPlot.ax[0,0].set_ylabel('dFF')
 
-            dFFPlot.ax[0, 1].plot(self.interpT, bootProbeGo['bootAve'], color=(1, 0, 0))
-            dFFPlot.ax[0, 1].fill_between(self.interpT, bootProbeGo['bootLow'], bootProbeGo['bootHigh'], color=(1, 0, 0),label='_nolegend_',
-                                          alpha=0.2)
-
-            dFFPlot.ax[0, 1].plot(self.interpT, bootProbeNoGo['bootAve'], color=(0, 1, 0))
-            dFFPlot.ax[0, 1].fill_between(self.interpT, bootProbeNoGo['bootLow'], bootProbeNoGo['bootHigh'], color=(0, 1, 0),label='_nolegend_',
+                dFFPlot.ax[0, 1].plot(self.interpT, bootProbeGo['bootAve'], color=(1, 0, 0))
+                dFFPlot.ax[0, 1].fill_between(self.interpT, bootProbeGo['bootLow'], bootProbeGo['bootHigh'], color=(1, 0, 0),label='_nolegend_',
                                           alpha=0.2)
 
-            dFFPlot.ax[0, 1].legend(['Probe go', 'Probe no go'])
-            dFFPlot.ax[0, 1].set_title('Cue')
-            dFFPlot.ax[0, 1].set_ylabel('dFF')
+                dFFPlot.ax[0, 1].plot(self.interpT, bootProbeNoGo['bootAve'], color=(0, 1, 0))
+                dFFPlot.ax[0, 1].fill_between(self.interpT, bootProbeNoGo['bootLow'], bootProbeNoGo['bootHigh'], color=(0, 1, 0),label='_nolegend_',
+                                          alpha=0.2)
+
+                dFFPlot.ax[0, 1].legend(['Probe go', 'Probe no go'])
+                dFFPlot.ax[0, 1].set_title('Cue')
+                dFFPlot.ax[0, 1].set_ylabel('dFF')
 
     ### this part is used to plot PSTH for every individual cues
     ### ------------------------------------------------------------------------------
@@ -308,56 +330,56 @@ class fluoAnalysis:
             #     dFFPlot.ax[0,subInd].set_ylabel('dFF')
     ###------------------------------------------------------------------------------------------------------
 
-            Hit_dFF = self.dFF_aligned[:,self.beh['choice']==2,cc]
-            FA_dFF = self.dFF_aligned[:, self.beh['choice'] == -1, cc]
-            Miss_dFF = self.dFF_aligned[:, self.beh['choice'] == -2, cc]
-            CorRej_dFF = self.dFF_aligned[:, self.beh['choice'] == 0, cc]
-            ProbeLick_dFF = self.dFF_aligned[:, self.beh['choice'] == -3, cc]
-            ProbeNoLick_dFF = self.dFF_aligned[:, self.beh['choice'] == -4, cc]
+                Hit_dFF = self.dFF_aligned[:,self.beh['trialType']==2,cc]
+                FA_dFF = self.dFF_aligned[:, self.beh['trialType'] == -1, cc]
+                Miss_dFF = self.dFF_aligned[:, self.beh['trialType'] == -2, cc]
+                CorRej_dFF = self.dFF_aligned[:, self.beh['trialType'] == 0, cc]
+                ProbeLick_dFF = self.dFF_aligned[:, self.beh['trialType'] == -3, cc]
+                ProbeNoLick_dFF = self.dFF_aligned[:, self.beh['trialType'] == -4, cc]
 
-            Hit_boot = bootstrap(Hit_dFF, 1, 1000)
-            FA_boot = bootstrap(FA_dFF, 1, 1000)
-            Miss_boot = bootstrap(Miss_dFF, 1, 1000)
-            CorRej_boot = bootstrap(CorRej_dFF, 1, 1000)
-            ProbeLick_boot = bootstrap(ProbeLick_dFF, 1, 1000)
-            ProbeNoLick_boot = bootstrap(ProbeNoLick_dFF, 1, 1000)
+                Hit_boot = bootstrap(Hit_dFF, 1, 1000)
+                FA_boot = bootstrap(FA_dFF, 1, 1000)
+                Miss_boot = bootstrap(Miss_dFF, 1, 1000)
+                CorRej_boot = bootstrap(CorRej_dFF, 1, 1000)
+                ProbeLick_boot = bootstrap(ProbeLick_dFF, 1, 1000)
+                ProbeNoLick_boot = bootstrap(ProbeNoLick_dFF, 1, 1000)
 
             # get cmap
-            cmap = matplotlib.colormaps['jet']
+                cmap = matplotlib.colormaps['jet']
 
-            dFFPlot.ax[1, 0].plot(self.interpT, Hit_boot['bootAve'], color = cmap(0.1))
-            dFFPlot.ax[1, 0].fill_between(self.interpT, Hit_boot['bootLow'], Hit_boot['bootHigh'],
+                dFFPlot.ax[1, 0].plot(self.interpT, Hit_boot['bootAve'], color = cmap(0.1))
+                dFFPlot.ax[1, 0].fill_between(self.interpT, Hit_boot['bootLow'], Hit_boot['bootHigh'],
                                                alpha=0.2, label='_nolegend_', color = cmap(0.1))
-            dFFPlot.ax[1, 0].plot(self.interpT, FA_boot['bootAve'], color = cmap(0.3))
-            dFFPlot.ax[1, 0].fill_between(self.interpT, FA_boot['bootLow'], FA_boot['bootHigh'],
+                dFFPlot.ax[1, 0].plot(self.interpT, FA_boot['bootAve'], color = cmap(0.3))
+                dFFPlot.ax[1, 0].fill_between(self.interpT, FA_boot['bootLow'], FA_boot['bootHigh'],
                                           alpha=0.2, label='_nolegend_',color = cmap(0.3))
-            dFFPlot.ax[1, 0].plot(self.interpT, Miss_boot['bootAve'], color = cmap(0.5))
-            dFFPlot.ax[1, 0].fill_between(self.interpT, Miss_boot['bootLow'], Miss_boot['bootHigh'],
+                dFFPlot.ax[1, 0].plot(self.interpT, Miss_boot['bootAve'], color = cmap(0.5))
+                dFFPlot.ax[1, 0].fill_between(self.interpT, Miss_boot['bootLow'], Miss_boot['bootHigh'],
                                           alpha=0.2, label='_nolegend_', color = cmap(0.5))
-            dFFPlot.ax[1, 0].plot(self.interpT, CorRej_boot['bootAve'], color = cmap(0.7))
-            dFFPlot.ax[1, 0].fill_between(self.interpT, CorRej_boot['bootLow'], CorRej_boot['bootHigh'],
+                dFFPlot.ax[1, 0].plot(self.interpT, CorRej_boot['bootAve'], color = cmap(0.7))
+                dFFPlot.ax[1, 0].fill_between(self.interpT, CorRej_boot['bootLow'], CorRej_boot['bootHigh'],
                                           alpha=0.2, label='_nolegend_', color = cmap(0.7))
-            dFFPlot.ax[1, 0].legend(['Hit', 'False alarm','Miss', 'Correct Rejection'])
-            dFFPlot.ax[1, 0].set_title('Cue')
-            dFFPlot.ax[1, 0].set_ylabel('dFF')
+                dFFPlot.ax[1, 0].legend(['Hit', 'False alarm','Miss', 'Correct Rejection'])
+                dFFPlot.ax[1, 0].set_title('Cue')
+                dFFPlot.ax[1, 0].set_ylabel('dFF')
 
-            dFFPlot.ax[1, 1].plot(self.interpT, ProbeLick_boot['bootAve'], color = cmap(0.25))
-            dFFPlot.ax[1, 1].fill_between(self.interpT, ProbeLick_boot['bootLow'], ProbeLick_boot['bootHigh'],
+                dFFPlot.ax[1, 1].plot(self.interpT, ProbeLick_boot['bootAve'], color = cmap(0.25))
+                dFFPlot.ax[1, 1].fill_between(self.interpT, ProbeLick_boot['bootLow'], ProbeLick_boot['bootHigh'],
                                           alpha=0.2, label='_nolegend_', color = cmap(0.25))
-            dFFPlot.ax[1, 1].plot(self.interpT, ProbeNoLick_boot['bootAve'], color = cmap(0.75))
-            dFFPlot.ax[1, 1].fill_between(self.interpT, ProbeNoLick_boot['bootLow'], ProbeNoLick_boot['bootHigh'],
+                dFFPlot.ax[1, 1].plot(self.interpT, ProbeNoLick_boot['bootAve'], color = cmap(0.75))
+                dFFPlot.ax[1, 1].fill_between(self.interpT, ProbeNoLick_boot['bootLow'], ProbeNoLick_boot['bootHigh'],
                                           alpha=0.2, label='_nolegend_', color = cmap(0.75))
-            dFFPlot.ax[1, 1].legend(['Probe lick', 'Probe no lick'])
-            dFFPlot.ax[1, 1].set_title('Cue')
-            dFFPlot.ax[1, 1].set_ylabel('dFF')
+                dFFPlot.ax[1, 1].legend(['Probe lick', 'Probe no lick'])
+                dFFPlot.ax[1, 1].set_title('Cue')
+                dFFPlot.ax[1, 1].set_ylabel('dFF')
 
-            dFFPlot.fig.set_size_inches(14, 10, forward=True)
+                dFFPlot.fig.set_size_inches(14, 10, forward=True)
 
             #plt.show()
 
             # save file
-            dFFPlot.save_plot('cell' + str(cc) + '.tif', 'tif', savefigpath)
-            plt.close()
+                dFFPlot.save_plot('cell' + str(cc) + '.tif', 'tif', savefigpath)
+                plt.close()
 
             # plot  dFF with running?
 
@@ -473,7 +495,7 @@ class fluoAnalysis:
 
         return np.array(independent_X), np.array(dFF_Y), regr_time
 
-    def linear_regr(self, X, y, regr_time, saveDataPath):
+    def linear_regr(self, X, y, regr_time, saveDataFile):
         # try logistic regression for cues?
         """
         x： independent variables
@@ -530,12 +552,12 @@ class fluoAnalysis:
                 sigCells['outcome'].append(cc)
 
         MLRResult['sigCells'] = sigCells
-        with open(saveDataPath, 'wb') as pf:
+        with open(saveDataFile, 'wb') as pf:
             pickle.dump(MLRResult, pf, protocol=pickle.HIGHEST_PROTOCOL)
             pf.close()
         return MLRResult
 
-    def plotMLRResult(self, MLRResult, labels, neuroRaw, saveFigPath):
+    def plotMLRResult(self, MLRResult, labels, neuronRaw, saveFigPath):
         # get the average coefficient plot and fraction of significant neurons
         varList =labels
         # average coefficient
@@ -791,15 +813,16 @@ class fluoAnalysis:
                     decode_results[varname]['prediction'][key] = np.zeros(len(regr_time))
                     # in probe trials, 2 -> 0; 3 -> 1
 
-                    results = Parallel(n_jobs=n_jobs, backend='multiprocessing')(
-                        delayed(self.run_decoder_trained_model)(
-                        decode_results[varname]['classifier'][idx],
-                        decodeSig[:,:,idx].transpose(),
-                        decodeVar[varname],subTrialMask[key]) for idx in
-                        tqdm(range(len(regr_time))))
+                    if np.sum(subTrialMask[key])>0:
+                        results = Parallel(n_jobs=n_jobs, backend='multiprocessing')(
+                            delayed(self.run_decoder_trained_model)(
+                            decode_results[varname]['classifier'][idx],
+                            decodeSig[:,:,idx].transpose(),
+                            decodeVar[varname],subTrialMask[key]) for idx in
+                            tqdm(range(len(regr_time))))
 
-                    for rr in range(len(results)):
-                        decode_results[varname]['prediction'][key][rr] = results[rr]
+                        for rr in range(len(results)):
+                            decode_results[varname]['prediction'][key][rr] = results[rr]
 
             # save the decoding results
             for key in varList:
@@ -1129,99 +1152,662 @@ class fluoAnalysis:
 
         return X_train,y_train, X_test, y_test
 
+    def get_dpca(self, signal, var, regr_time, save_data_path):
+        """
+        PCA analysis on calcium data
+        demixed PCA
+        signal: shape [numCells, time_bin, stim, action]
+        # python code not working, output the data for dPCA in matlab?
+        referece: https://pietromarchesi.net/pca-neural-data.html#theforms
+        PCA averaged-concatenated (hybrid) form
+        """
 
+        # prepare the signal for dpca input
+        nVars = var.keys()
+        nCells = signal.shape[0]
+        nTimeBins = signal.shape[2]
+        nTrials = signal.shape[1]
+        trialInd = np.arange(nTrials)
+        signal_pca = []
+        # for the last two dimensions
+        # (0, 0): nogo+nolick; (0, 1): nogo+lick
+        # (1, 0): go+miss; (1,1): go+lick
+        hitTrials = trialInd[np.logical_and(var['stim']==1, var['action']==1)]
+        FATrials = trialInd[np.logical_and(var['stim']==0, var['action']==1)]
+        CorRejTrials = trialInd[np.logical_and(var['stim']==0, var['action']==0)]
+        missTrials = trialInd[np.logical_and(var['stim']==1, var['action']==0)]
+        signal_pca.append(np.mean(signal[:,hitTrials,:],1))
+        signal_pca.append(np.mean(signal[:, FATrials, :], 1))
+        signal_pca.append(np.mean(signal[:, CorRejTrials, :], 1))
+        signal_pca.append(np.mean(signal[:, missTrials, :], 1))
+
+        signal_ave = np.hstack(signal_pca)
+
+        # z-score the average df/f
+        ss = StandardScaler(with_mean=True, with_std=True)
+        signal_ave_sc = ss.fit_transform(signal_ave.T).T
+
+        n_components = 15
+        pca = PCA(n_components=n_components)
+        pca.fit(signal_ave_sc.T)
+
+        # plot amount of variance explained?
+
+        # project individual trials to fitted PCA
+        projected_trials = []
+        signal_sc = np.zeros((signal.shape[0], signal.shape[1], signal.shape[2]))
+        for tt in range(signal.shape[1]):
+            signal_sc[:,tt,:] = ss.transform(signal[:,tt,:].T).T
+            proj_trial = pca.transform(signal_sc[:,tt,:].T).T
+            projected_trials.append(proj_trial)
+        trial_types = ['Hit', 'FA', 'CorRej', 'Miss']
+        gt = {comp: {t_type: [] for t_type in trial_types}
+              for comp in range(n_components)}
+
+        for comp in range(n_components):
+            for t in hitTrials:
+                tt = projected_trials[t][comp,:]
+                gt[comp]['Hit'].append(tt)
+            for t in FATrials:
+                tt = projected_trials[t][comp,:]
+                gt[comp]['FA'].append(tt)
+            for t in CorRejTrials:
+                tt = projected_trials[t][comp,:]
+                gt[comp]['CorRej'].append(tt)
+            for t in missTrials:
+                tt = projected_trials[t][comp,:]
+                gt[comp]['Miss'].append(tt)
+
+        save_file_path = os.path.join(save_data_path, 'dPCA_results.pickle')
+        with open(save_file_path, 'wb') as file:
+            pickle.dump(gt, file)
+            '''use own plot function, include bootstrap CIs'''
+        matplotlib.use('QtAgg')
+        pal = sns.color_palette('husl', 4)
+        PCPlot = StartSubplots(1,3,figsize=(20, 6), ifSharex = True, ifSharey=True)
+
+        for comp in range(3):
+            ax = PCPlot.ax[comp]
+            for t, t_type in enumerate(trial_types[0:3]):
+                    #sns.tsplot(gt[comp][t_type], time=regr_time, ax=ax,
+                    #           err_style='ci_band',
+                    #           ci=95,
+                    #           color=pal[t])
+                ax.plot(regr_time,np.mean(gt[comp][t_type],0), label=t_type)
+                #add_stim_to_plot(ax)
+            ax.set_ylabel('PC {}'.format(comp + 1))
+
+        PCPlot.ax[1].set_xlabel('Time (s)')
+        PCPlot.ax[2].legend(['Hit', 'FA', 'CorRej'])
+        #sns.despine(right=True, top=True)
+        #add_orientation_legend(axes[2])
+        PCPlot.save_plot('Principle components.tiff', 'tif', save_data_path)
+
+        '''3d PCA projections'''
+        ave_pca = PCA(n_components = 3)
+        signal_ave_p = ave_pca.fit_transform(signal_ave_sc.T).T
+
+        component_x = 0
+        component_y = 1
+        component_z = 2
+
+        sigma = 3 # smoothing param
+
+        fig = plt.figure(figsize=[12,12])
+        ax = fig.add_subplot(1,1,1, projection='3d')
+        ax.set_xticks([])
+        ax.set_yticks([])
+        ax.set_zticks([])
+        ax.xaxis.pane.fill = False
+        ax.yaxis.pane.fill = False
+        ax.zaxis.pane.fill = False
+        ax.xaxis.pane.set_edgecolor('w')
+        ax.yaxis.pane.set_edgecolor('w')
+        ax.zaxis.pane.set_edgecolor('w')
+        ax.set_xlabel('PC 1')
+        ax.set_ylabel('PC 2')
+        ax.set_zlabel('PC 3')
+
+        trial_size = len(regr_time)
+        for t, t_type in enumerate(trial_types[0:3]):
+            x = signal_ave_p[component_x, t * trial_size :(t+1) * trial_size]
+            y = signal_ave_p[component_y, t * trial_size :(t+1) * trial_size]
+            z = signal_ave_p[component_z, t * trial_size :(t+1) * trial_size]
+
+                # apply some smoothing to the trajectories
+            x = gaussian_filter1d(x, sigma=sigma)
+            y = gaussian_filter1d(y, sigma=sigma)
+            z = gaussian_filter1d(z, sigma=sigma)
+
+                # use the mask to plot stimulus and pre/post stimulus separately
+
+            ax.plot(x, y, z, c=pal[t], label=t_type)
+
+            # plot t = -3, t= 0, t=5
+            ax.scatter(x[0], y[0],z[0], c=pal[t], s= 50, marker='o', label='-3 s')
+            ax.scatter(x[30], y[30], z[30], c=pal[t], s=50, marker='x', label='0 s')
+            ax.scatter(x[-1], y[-1],z[-1], c=pal[t], s=50, marker='^', label='5 s')
+        ax.legend(loc='right', bbox_to_anchor=(2, 1))
+
+        output_file = os.path.join(save_data_path, "dPCA_projection.png")
+        plt.savefig(output_file)
+
+        output_pickle = os.path.join(save_data_path, "dPCA_projection.fig.pickle")
+        pickle.dump(fig,open(output_pickle, 'wb'))
+
+        # load the figure
+        #figx = pickle.load(open(output_pickle, 'rb'))
+        #plt.show()  # Show the figure, edit it, etc.!
     def clusering(self):
         # hierachical clustering
         # cluster pure neural activity? cluster average neural activity in different trials?
         # cluster correlation coefficient?
         pass
 
-if __name__ == "__main__":
-    animal, session = 'JUV015', '220409'
+class fluoSum:
 
-    beh_folder = "C:\\Users\\linda\\Documents\\GitHub\\madeline_go_nogo\\data"
-    beh_file = "JUV015-220409-behaviorLOG.mat"
-    trialbytrial = GoNogoBehaviorMat(animal, session, os.path.join(beh_folder, beh_file))
+    def __init__(self,root_dir):
+        # start with the root directory, taking the dataframe of behObject
+
+        # specify saved files
+        self.root_dir = root_dir
+        self.data_dir = 'Data'
+        self.analysis_dir = 'Analysis'
+        self.summary_dir = 'Summary'
+
+        animals = os.listdir(os.path.join(self.root_dir, self.data_dir))
+
+        # initialize the dataframe
+        columns = ['subject', 'age','date',
+                   'beh_data_path', 'beh_analysis_dir', 'fluo_data_dir','fluo_analysis_dir',
+                   'dprime']
+        data_df = pd.DataFrame(columns=columns)
+
+        # go through the files to update the dataframe
+        Ind = 0
+        for animal in animals:
+            animal_path = os.path.join(self.root_dir, self.analysis_dir, animal)
+            sessions = os.listdir(animal_path)
+
+            for session in sessions:
+                matFile = glob.glob(os.path.join(animal_path, session, '*.mat'))
+                separated = matFile[0].split(os.sep)
+                data = pd.DataFrame({
+                    'subject': animal,
+                    'date': separated[-2],
+                    'age': animal[0:3],
+                    'beh_data_path': matFile,
+                    'beh_analysis_dir': os.path.join(root_dir, self.analysis_dir,
+                                                     animal, separated[-2], 'behavior'),
+                    'fluo_data_dir': os.path.join(root_dir, self.data_dir,
+                                                  animal, separated[-2],'suite2p','plane0'),
+                    'fluo_analysis_dir': os.path.join(root_dir,  self.analysis_dir,
+                                              animal, separated[-2],'fluo'),
+                    'dprime': np.nan
+                }, index=[Ind])
+
+                Ind = Ind + 1
+                data_df = pd.concat([data_df, data])
+
+        self.data_df = data_df
+        self.data_dict = dict()
+
+    def process_single_session(self):
+        nFiles = self.data_df.shape[0]
+        for f in tqdm(range(nFiles)):
+            animal = self.data_df.iloc[f]['subject']
+            session = self.data_df.iloc[f]['date']
+            input_path = self.data_df.iloc[f]['beh_data_path']
+
+            # get behavior data
+            x = GoNogoBehaviorMat(animal, session, input_path)
+            self.data_df.at[f, 'dprime'] = x.dprime
+            self.data_df.at[f,'beh_object'] = x
+            self.data_df.at[f, 'ifCut'] = x.ifCut
+            self.data_df.at[f, 'cutoff'] = x.cutoff
+
+            input_folder = self.data_df.iloc[f]['fluo_data_dir']
+
+            if not os.path.exists(self.data_df.iloc[f]['fluo_analysis_dir']):
+                os.makedirs(self.data_df.iloc[f]['fluo_analysis_dir'])
+            fluo_file = os.path.join(self.data_df.iloc[f]['fluo_analysis_dir'], animal + session + '_dff_df_file.csv')
+
+            gn_series = Suite2pSeries(input_folder)
+            gn_series.get_dFF(x, fluo_file)
+
+            # plot the cells in field of view
+            savefigpath = self.data_df.iloc[f]['fluo_analysis_dir']
+            gn_series.plot_cell_location_dFF(np.arange(gn_series.neural_df.shape[1] - 1), savefigpath)
+
+            time_range = [0,600]
+            gn_series.plot_cell_dFF(time_range, savefigpath)
+            # create a fluorescent analysis object
+            beh_file = os.path.join(self.data_df.iloc[f]['beh_analysis_dir'], 'behAnalysis.pickle')
+            analysis = fluoAnalysis(beh_file, fluo_file)
+            analysis.align_fluo_beh()
+
+            self.data_df.at[f, 'fluo_analysis'] = analysis
+            self.data_df.at[f, 'fluo_raw'] = gn_series
+            self.data_df.at[f, 'n_cells'] = gn_series.neural_df.shape[1]-1
+
+    def cell_plots(self):
+        # plot cell location and PSTH of every cell
+        nFiles = self.data_df.shape[0]
+        for f in tqdm(range(nFiles)):
+            analysis = self.data_df['fluo_analysis'][f]
+            savefigpath = os.path.join(self.data_df.iloc[f]['fluo_analysis_dir'],'cells-combined-cue')
+            if not os.path.exists(savefigpath):
+                os.makedirs(savefigpath)
+            analysis.plot_dFF(savefigpath)
+
+    def MLR_session(self):
+        # run multiple linear regression session by session
+        n_predictors = 14
+        labels = ['s(n+1)', 's(n)', 's(n-1)', 'c(n+1)', 'c(n)', 'c(n-1)',
+                  'r(n+1)', 'r(n)', 'r(n-1)', 'x(n+1)', 'x(n)', 'x(n-1)', 'speed', 'lick']
+        nFiles = self.data_df.shape[0]
+        for f in tqdm(range(nFiles)):
+            analysis = self.data_df['fluo_analysis'][f]
+            gn_series = self.data_df['fluo_raw'][f]
+            saveDataPath = os.path.join(self.data_df.iloc[f]['fluo_analysis_dir'],'MLR')
+            if not os.path.exists(saveDataPath):
+                os.makedirs(saveDataPath)
+
+            saveTbTFile = os.path.join(saveDataPath, 'trialbytrialVar.pickle')
+            if not os.path.exists(saveTbTFile):
+                X, y, regr_time = analysis.linear_model(n_predictors)
+                tbtVar = {}
+                tbtVar['X'] = X
+                tbtVar['y'] = y
+                tbtVar['regr_time'] = regr_time
+
+            # save X and y
+                with open(saveTbTFile, 'wb') as pf:
+                    pickle.dump(tbtVar, pf, protocol=pickle.HIGHEST_PROTOCOL)
+                    pf.close()
+            else:
+                # load the saved results
+                with open(saveTbTFile, 'rb') as f:
+                    tbtVar = pickle.load(f)
+                    X = tbtVar['X']
+                    y = tbtVar['y']
+                    regr_time = tbtVar['regr_time']
+            # run MLR; omit trials without fluorescent data
+
+            saveDataFile = os.path.join(saveDataPath, 'MLRResult.pickle')
+            if not os.path.exists(saveDataFile):
+                MLRResult = analysis.linear_regr(X[:, 1:-2, :], y[:, 1:-2, :], regr_time, saveDataFile)
+                analysis.plotMLRResult(MLRResult, labels, gn_series, saveDataPath)
+            else:
+                print('MLR done!')
+
+    def MLR_summary(self):
+        # data structure of MLR results
+        # MLR['coeff'] npred * t * nCell coefficient
+        # ['pval']  npred * t * nCell p-value
+        # ['r2']  t * nCell  r-square
+        # ['regr_time']  t: time step
+        # ['sigCells'] a dictionary of cell ID that are significant for 'stimulus', 'action', 'reward'
+
+        """
+        what to do with sigCells?
+        """
+        n_predictors = 14
+        labels = ['s(n+1)', 's(n)', 's(n-1)', 'c(n+1)', 'c(n)', 'c(n-1)',
+                  'r(n+1)', 'r(n)', 'r(n-1)', 'x(n+1)', 'x(n)', 'x(n-1)', 'speed', 'lick']
+        nFiles = self.data_df.shape[0]
+
+        # read coefficient, sig cells, neurons with
+        for f in tqdm(range(nFiles)):
+            saveDataPath = os.path.join(self.data_df.iloc[f]['fluo_analysis_dir'], 'MLR')
+            saveDataFile = os.path.join(saveDataPath, 'MLRResult.pickle')
+            # load the pickle file
+            with open(saveDataFile, 'rb') as file:
+                MLRResult =  pickle.load(file)
+
+            # initialize variables
+            if f==0:
+                regr_time = MLRResult['regr_time']
+                MLRSummary_ADT = {}
+                MLRSummary_JUV = {}
+                MLRSummary_ADT['coeff'] = np.empty((n_predictors,len(regr_time),
+                                                    0))
+                MLRSummary_ADT['sig'] = np.empty((n_predictors,len(regr_time),
+                                                    0))
+                MLRSummary_JUV['coeff'] = np.empty((n_predictors,len(regr_time),
+                                                    0))
+                MLRSummary_JUV['sig'] = np.empty((n_predictors,len(regr_time),
+                                                    0))
+
+            # calculate fraction of neurons that are significant
+            pThresh = 0.01
+            nCell = MLRResult['coeff'].shape[2]
+            fracSig = np.sum(MLRResult['pval'][:, :, :] < pThresh, 2) / nCell
+            if self.data_df.iloc[f]['age'] == 'ADT':
+                MLRSummary_ADT['coeff'] = np.concatenate((MLRSummary_ADT['coeff'],
+                                                          MLRResult['coeff']), 2)
+                MLRSummary_ADT['sig'] = np.concatenate((MLRSummary_ADT['sig'],
+                                                          fracSig[:,:,np.newaxis]), 2)
+            elif self.data_df.iloc[f]['age'] == 'JUV':
+                MLRSummary_JUV['coeff'] = np.concatenate((MLRSummary_JUV['coeff'],
+                                                          MLRResult['coeff']), 2)
+                MLRSummary_JUV['sig'] = np.concatenate((MLRSummary_JUV['sig'],
+                                                          fracSig[:,:,np.newaxis]), 2)
+
+
+        # plot the summary results
+        savefigpath = os.path.join(self.root_dir, self.summary_dir, 'fluo')
+        if not os.path.exists(savefigpath):
+            os.makedirs(savefigpath)
+        self.plot_MLR_summary(MLRSummary_ADT, MLRSummary_JUV, regr_time, labels, savefigpath)
+
+    def plot_MLR_summary(self, MLR_ADT, MLR_JUV, regr_time, labels, saveFigPath):
+            # get the average coefficient plot and fraction of significant neurons
+        matplotlib.use('Qt5Agg')
+        varList = labels
+            # average coefficient
+        nPredictors = len(varList)
+
+        adtColor = (255 / 255, 189 / 255, 53 / 255)
+        juvColor = (63 / 255, 167 / 255, 150 / 255)
+
+        coeffPlot = StartSubplots(4, 4, ifSharey=True)
+
+        maxY = 0
+        minY = 0
+        for n in range(nPredictors):
+            ## plot ADT animals
+            tempBoot = bootstrap(MLR_ADT['coeff'][n, :, :], 1, 1000)
+            tempMax = max(tempBoot['bootHigh'])
+            tempMin = min(tempBoot['bootLow'])
+            if tempMax > maxY:
+                maxY = tempMax
+            if tempMin < minY:
+                minY = tempMin
+            coeffPlot.ax[n // 4, n % 4].plot(regr_time, tempBoot['bootAve'], c=adtColor)
+            coeffPlot.ax[n // 4, n % 4].fill_between(regr_time, tempBoot['bootLow'],
+                                                         tempBoot['bootHigh'],
+                                                         alpha=0.2, color=adtColor)
+
+            tempBoot = bootstrap(MLR_JUV['coeff'][n, :, :], 1, 1000)
+            tempMax = max(tempBoot['bootHigh'])
+            tempMin = min(tempBoot['bootLow'])
+            if tempMax > maxY:
+                maxY = tempMax
+            if tempMin < minY:
+                minY = tempMin
+            coeffPlot.ax[n // 4, n % 4].plot(regr_time, tempBoot['bootAve'], c=juvColor)
+            coeffPlot.ax[n // 4, n % 4].fill_between(regr_time, tempBoot['bootLow'],
+                                                         tempBoot['bootHigh'],
+                                                         alpha=0.2, color=juvColor)
+
+            coeffPlot.ax[n // 4, n % 4].set_title(varList[n])
+
+            # test significance
+
+        plt.ylim((minY, maxY))
+        plt.show()
+        coeffPlot.save_plot('Average coefficient.tif', 'tiff', saveFigPath)
+
+            # fraction of significant neurons
+        sigPlot = StartSubplots(4, 4, ifSharey=True)
+
+        # binomial test to determine signficance
+
+        for n in range(nPredictors):
+
+            tempBoot = bootstrap(MLR_ADT['sig'][n, :, :], 1, 1000)
+
+            sigPlot.ax[n // 4, n % 4].plot(regr_time, tempBoot['bootAve'],
+                                           c=adtColor)
+            sigPlot.ax[n // 4, n % 4].fill_between(regr_time, tempBoot['bootLow'],
+                                                         tempBoot['bootHigh'],
+                                                         alpha=0.2, color=adtColor)
+
+            tempBoot = bootstrap(MLR_JUV['sig'][n, :, :], 1, 1000)
+
+            sigPlot.ax[n // 4, n % 4].plot(regr_time, tempBoot['bootAve'],
+                                           c=juvColor)
+            sigPlot.ax[n // 4, n % 4].fill_between(regr_time, tempBoot['bootLow'],
+                                                   tempBoot['bootHigh'],
+                                                   alpha=0.2, color=juvColor)
+
+            sigPlot.ax[n // 4, n % 4].set_title(varList[n])
+
+            if n // 4 == 0:
+                sigPlot.ax[n // 4, n % 4].set_ylabel('Fraction of sig')
+            if n > 8:
+                sigPlot.ax[n // 4, n % 4].set_xlabel('Time from cue (s)')
+                # plot the signifcance bar
+            #dt = np.mean(np.diff(regr_time))
+            #for tt in range(len(regr_time)):
+            #    if [tt] < 0.05:
+            #        sigPlot.ax[n // 4, n % 4].plot(MLRResult['regr_time'][tt] + dt * np.array([-0.5, 0.5]),
+            #                                           [0.5, 0.5], color=(255 / 255, 189 / 255, 53 / 255), linewidth=5)
+        plt.ylim((0, 0.6))
+        plt.show()
+        sigPlot.save_plot('Fraction of significant neurons.tif', 'tiff', saveFigPath)
+
+    def decoding_session(self):
+        nFiles = self.data_df.shape[0]
+        for f in tqdm(range(nFiles)):
+            analysis = self.data_df['fluo_analysis'][f]
+            gn_series = self.data_df['fluo_raw'][f]
+            saveDataPath = os.path.join(self.data_df.iloc[f]['fluo_analysis_dir'],
+                                        'MLR')
+            if not os.path.exists(saveDataPath):
+                os.makedirs(saveDataPath)
+
+            saveTbTFile = os.path.join(saveDataPath, 'trialbytrialVar.pickle')
+            if not os.path.exists(saveTbTFile):
+                X, y, regr_time = analysis.linear_model(n_predictors)
+                tbtVar = {}
+                tbtVar['X'] = X
+                tbtVar['y'] = y
+                tbtVar['regr_time'] = regr_time
+
+                # save X and y
+                with open(saveTbTFile, 'wb') as pf:
+                    pickle.dump(tbtVar, pf, protocol=pickle.HIGHEST_PROTOCOL)
+                    pf.close()
+            else:
+                # load the saved results
+                with open(saveTbTFile, 'rb') as pf:
+                    tbtVar = pickle.load(pf)
+                    X = tbtVar['X']
+                    y = tbtVar['y']
+                    regr_time = tbtVar['regr_time']
+            # run decoding; omit trials without fluorescent data
+            saveDataPath = os.path.join(self.data_df.iloc[f]['fluo_analysis_dir'],
+                                        'decoding')
+            if not os.path.exists(saveDataPath):
+                os.makedirs(saveDataPath)
+            saveDataFile = os.path.join(saveDataPath, 'decodingResult.pickle')
+            if not os.path.exists(saveDataFile):
+                decodeVar = {}
+
+                decodeVar['action'] = X[4, :, 0]
+                decodeVar['outcome'] = X[7, :, 0]
+                decodeVar['stimulus'] = np.array(
+                    [np.int(analysis.beh['sound_num'][x]) for x in range(len(analysis.beh['sound_num']))])
+                decodeSig = y
+
+                trialMask = decodeVar['stimulus'] <= 8
+                # check false alarm trials, and probe trials
+                subTrialMask = {}
+                subTrialMask['FA'] = analysis.beh['trialType'] == -1
+                subTrialMask['probe'] = decodeVar['stimulus'] > 8
+                subTrialMask['Hit'] = analysis.beh['trialType'] == 2
+                subTrialMask['CorRej'] = analysis.beh['trialType'] == 0
+                # stimulus 1-4: 1
+                # stimulus 5-8: 0
+                # stimulus 9-12；2
+                # stimulus 13-16: 3
+                tempSti = np.zeros(len(decodeVar['stimulus']))
+                for ss in range(len(decodeVar['stimulus'])):
+                    if decodeVar['stimulus'][ss] <= 4:
+                        tempSti[ss] = 1
+                    elif decodeVar['stimulus'][ss] > 4 and decodeVar['stimulus'][ss] <= 8:
+                        tempSti[ss] = 0
+                    elif decodeVar['stimulus'][ss] > 8 and decodeVar['stimulus'][ss] <= 12:
+                        tempSti[ss] = 1
+                    elif decodeVar['stimulus'][ss] > 12:
+                        tempSti[ss] = 0
+                decodeVar['stimulus'] = tempSti
+
+                classifier = "RandomForest"
+                varList = ['action', 'outcome', 'stimulus']
+
+                decode_results = analysis.decoding(decodeSig, decodeVar, varList, trialMask,subTrialMask, classifier, regr_time, saveDataFile)
+            else:
+                print('Decoding done!')
+
+            analysis.decode_analysis(gn_series, saveDataFile, saveDataPath)
+
+    def decoding_summary(self):
+        pass
+
+    def dpca_session(self):
+        # clean up the plot function
+        nFiles = self.data_df.shape[0]
+        for f in tqdm(range(nFiles)):
+            analysis = self.data_df['fluo_analysis'][f]
+            gn_series = self.data_df['fluo_raw'][f]
+            saveDataPath = os.path.join(self.data_df.iloc[f]['fluo_analysis_dir'],
+                                        'MLR')
+
+            saveTbTFile = os.path.join(saveDataPath, 'trialbytrialVar.pickle')
+            if not os.path.exists(saveTbTFile):
+                X, y, regr_time = analysis.linear_model(n_predictors)
+                tbtVar = {}
+                tbtVar['X'] = X
+                tbtVar['y'] = y
+                tbtVar['regr_time'] = regr_time
+
+                # save X and y
+                with open(saveTbTFile, 'wb') as pf:
+                    pickle.dump(tbtVar, pf, protocol=pickle.HIGHEST_PROTOCOL)
+                    pf.close()
+            else:
+                # load the saved results
+                with open(saveTbTFile, 'rb') as pf:
+                    tbtVar = pickle.load(pf)
+                    X = tbtVar['X']
+                    y = tbtVar['y']
+                    regr_time = tbtVar['regr_time']
+
+
+            stim = np.array([np.int(analysis.beh['sound_num'][x]) for x in range(len(analysis.beh['sound_num']))])
+            tempStim = np.zeros(len(stim))
+            for ss in range(len(stim)):
+                if stim[ss] <= 4:
+                    tempStim[ss] = 1
+                elif stim[ss] > 4 and stim[ss] <= 8:
+                    tempStim[ss] = 0
+                elif stim[ss] > 8 and stim[ss] <= 12:
+                    tempStim[ss] = 2
+                elif stim[ss] > 12:
+                    tempStim[ss] = 3
+            pcaVar = {'stim':tempStim, 'action':X[4,:,0]}
+
+            savePCAPath = os.path.join(self.data_df.iloc[f]['fluo_analysis_dir'],
+                                        'dPCA')
+            if not os.path.exists(savePCAPath):
+                os.makedirs(savePCAPath)
+            # signal:
+            analysis.get_dpca(y, pcaVar, regr_time, savePCAPath)
+
+if __name__ == "__main__":
+
+    test_single_session = False
+    if test_single_session:
+        animal, session = 'JUV015', '220409'
+
+        beh_folder = "C:\\Users\\linda\\Documents\\GitHub\\madeline_go_nogo\\data"
+        beh_file = "JUV015-220409-behaviorLOG.mat"
+        trialbytrial = GoNogoBehaviorMat(animal, session, os.path.join(beh_folder, beh_file))
 
     # read the raw fluorescent data from suite2P
-    input_folder = r"C:\Users\linda\Documents\GitHub\madeline_go_nogo\data\suite2p_output"
-    gn_series = Suite2pSeries(input_folder)
-
+        input_folder = r"C:\Users\linda\Documents\GitHub\madeline_go_nogo\data\suite2p_output\plane0"
+        gn_series = Suite2pSeries(input_folder)
+        fluo_file = r'C:\Users\linda\Documents\GitHub\madeline_imagingData\JUV015_220409_dff_df_file.csv'
+        gn_series.get_dFF(trialbytrial, fluo_file)
     # align behavior with fluorescent data
-    gn_series.realign_time(trialbytrial)
+        #gn_series.realign_time(trialbytrial)
 
     # save file
-    fluo_file = r'C:\Users\linda\Documents\GitHub\madeline_imagingData\JUV015_220409_dff_df_file.csv'
-    gn_series.neural_df.to_csv(fluo_file)
+
+        gn_series.neural_df.to_csv(fluo_file)
 
     # plot the cell location
-    gn_series.plot_cell_location_dFF(np.arange(gn_series.neural_df.shape[1]-1))
+        #gn_series.plot_cell_location_dFF(np.arange(gn_series.neural_df.shape[1]-1))
 
     # dff_df = gn_series.calculate_dff(melt=False)
 
-    beh_file = r'C:\Users\linda\Documents\GitHub\madeline_go_nogo\data\behAnalysis.pickle'
+        beh_file = r'C:\Users\linda\Documents\GitHub\madeline_go_nogo\data\behAnalysis.pickle'
 
     # build the linear regression model
-    analysis = fluoAnalysis(beh_file,fluo_file)
-    analysis.align_fluo_beh()
+        analysis = fluoAnalysis(beh_file,fluo_file)
+        analysis.align_fluo_beh()
 
     # individual cell plots
     #trials = np.arange(20,50)
     #analysis.plot_dFF_singleCell(157, trials)
     # cell plots
-    # analysis.plot_dFF(os.path.join(fluofigpath,'cells-combined-cue'))
+        fluofigpath = r'C:\Users\linda\Documents\GitHub\madeline_go_nogo\data\fluo_plot'
+        analysis.plot_dFF(os.path.join(fluofigpath,'cells-combined-cue'))
 
     # build multiple linear regression
     # arrange the independent variables
-    saveFigPath = r'C:\Users\linda\Documents\GitHub\madeline_go_nogo\data\fluo_plot'
+        saveFigPath = r'C:\Users\linda\Documents\GitHub\madeline_go_nogo\data\fluo_plot'
 
-    n_predictors = 14
-    labels = ['s(n+1)','s(n)', 's(n-1)','c(n+1)', 'c(n)', 'c(n-1)',
+        n_predictors = 14
+        labels = ['s(n+1)','s(n)', 's(n-1)','c(n+1)', 'c(n)', 'c(n-1)',
               'r(n+1)', 'r(n)', 'r(n-1)', 'x(n+1)', 'x(n)', 'x(n-1)', 'speed', 'lick']
-    X, y, regr_time = analysis.linear_model(n_predictors)
-    saveDataPath = r'C:\\Users\\linda\\Documents\\GitHub\\madeline_go_nogo\\data\\MLR.pickle'
+        X, y, regr_time = analysis.linear_model(n_predictors)
+        saveDataPath = r'C:\\Users\\linda\\Documents\\GitHub\\madeline_go_nogo\\data\\MLR.pickle'
     # run MLR; omit trials without fluorescent data
-    MLRResult = analysis.linear_regr(X[:,1:-2,:], y[:,1:-2,:], regr_time, saveDataPath)
-    analysis.plotMLRResult(MLRResult, labels, saveFigPath)
+        MLRResult = analysis.linear_regr(X[:,1:-2,:], y[:,1:-2,:], regr_time, saveDataPath)
+        analysis.plotMLRResult(MLRResult, labels, saveFigPath)
 
     # for decoding
     # decode for action/outcome/stimulus
-    decodeVar = {}
+        decodeVar = {}
 
-    decodeVar['action'] = X[4,:,0]
-    decodeVar['outcome'] = X[7,:,0]
-    decodeVar['stimulus'] = np.array([np.int(analysis.beh['sound_num'][x]) for x in range(len(analysis.beh['sound_num']))])
-    decodeSig = y
+        decodeVar['action'] = X[4,:,0]
+        decodeVar['outcome'] = X[7,:,0]
+        decodeVar['stimulus'] = np.array([np.int(analysis.beh['sound_num'][x]) for x in range(len(analysis.beh['sound_num']))])
+        decodeSig = y
 
-    trialMask = decodeVar['stimulus'] <= 8
-    # check false alarm trials, and probe trials
-    subTrialMask = {}
-    subTrialMask['FA'] = analysis.beh['trialType'] == -1
-    subTrialMask['probe'] = decodeVar['stimulus'] > 8
-    subTrialMask['Hit'] = analysis.beh['trialType'] == 2
-    subTrialMask['CorRej'] = analysis.beh['trialType'] == 0
+        trialMask = decodeVar['stimulus'] <= 8
+        # check false alarm trials, and probe trials
+        subTrialMask = {}
+        subTrialMask['FA'] = analysis.beh['trialType'] == -1
+        subTrialMask['probe'] = decodeVar['stimulus'] > 8
+        subTrialMask['Hit'] = analysis.beh['trialType'] == 2
+        subTrialMask['CorRej'] = analysis.beh['trialType'] == 0
     # stimulus 1-4: 1
     # stimulus 5-8: 0
     # stimulus 9-12；2
     # stimulus 13-16: 3
-    tempSti = np.zeros(len(decodeVar['stimulus']))
-    for ss in range(len(decodeVar['stimulus'])):
-        if decodeVar['stimulus'][ss] <= 4:
-            tempSti[ss] = 1
-        elif decodeVar['stimulus'][ss] > 4 and decodeVar['stimulus'][ss] <= 8:
-            tempSti[ss] = 0
-        elif decodeVar['stimulus'][ss] > 8 and decodeVar['stimulus'][ss] <= 12:
-            tempSti[ss] = 1
-        elif decodeVar['stimulus'][ss] > 12:
-            tempSti[ss] = 0
-    decodeVar['stimulus'] = tempSti
+        tempSti = np.zeros(len(decodeVar['stimulus']))
+        for ss in range(len(decodeVar['stimulus'])):
+            if decodeVar['stimulus'][ss] <= 4:
+                tempSti[ss] = 1
+            elif decodeVar['stimulus'][ss] > 4 and decodeVar['stimulus'][ss] <= 8:
+                tempSti[ss] = 0
+            elif decodeVar['stimulus'][ss] > 8 and decodeVar['stimulus'][ss] <= 12:
+                tempSti[ss] = 1
+            elif decodeVar['stimulus'][ss] > 12:
+                tempSti[ss] = 0
+        decodeVar['stimulus'] = tempSti
 
-    classifier = "RandomForest"
-    varList = ['action','outcome','stimulus']
-    saveDataPath = r'C:\Users\linda\Documents\GitHub\madeline_go_nogo\data\decode.pickle'
+        classifier = "RandomForest"
+        varList = ['action','outcome','stimulus']
+        saveDataPath = r'C:\Users\linda\Documents\GitHub\madeline_go_nogo\data\decode.pickle'
 
     #decode_results = analysis.decoding(decodeSig, decodeVar, varList, trialMask,subTrialMask, classifier, regr_time, saveDataPath)
-    neuronRaw = gn_series
+        neuronRaw = gn_series
 
 
     # train decode model on whole dataset, use it to decode FA trials later
@@ -1231,17 +1817,34 @@ if __name__ == "__main__":
     # neuron position
     # redundancy
 
-    '''demixed PCA'''
-    stim = np.array([np.int(analysis.beh['sound_num'][x]) for x in range(len(analysis.beh['sound_num']))])
-    tempStim = np.zeros(len(stim))
-    for ss in range(len(stim)):
-        if stim[ss] <= 4:
-            tempStim[ss] = 1
-        elif stim[ss] > 4 and stim[ss] <= 8:
-            tempStim[ss] = 0
-        elif stim[ss] > 8 and stim[ss] <= 12:
-            tempStim[ss] = 2
-        elif stim[ss] > 12:
-            tempStim[ss] = 3
-    pcaVar = {'stim':tempStim, 'action':X[4,:,0]}
-    x = 1
+        '''demixed PCA'''
+        stim = np.array([np.int(analysis.beh['sound_num'][x]) for x in range(len(analysis.beh['sound_num']))])
+        tempStim = np.zeros(len(stim))
+        for ss in range(len(stim)):
+            if stim[ss] <= 4:
+                tempStim[ss] = 1
+            elif stim[ss] > 4 and stim[ss] <= 8:
+                tempStim[ss] = 0
+            elif stim[ss] > 8 and stim[ss] <= 12:
+                tempStim[ss] = 2
+            elif stim[ss] > 12:
+                tempStim[ss] = 3
+        pcaVar = {'stim':tempStim, 'action':X[4,:,0]}
+
+    test_summary = True
+    if test_summary:
+        root_dir = r'Z:\HongliWang\Madeline\project'
+        fluo_summary = fluoSum(root_dir)
+        fluo_summary.process_single_session()
+
+        # plot single cell PSTH
+        fluo_summary.cell_plots()
+
+        fluo_summary.MLR_session()
+        # fluo_summary.MLR_summary()
+        # multiple linear regression
+
+        #fluo_summary.decoding_session()
+
+        fluo_summary.dpca_session()
+        x=1
