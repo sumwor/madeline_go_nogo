@@ -1,5 +1,5 @@
 %% Analyze Behavior
-root_path = 'Z:\HongliWang\Madeline\project';
+root_path = 'Z:\HongliWang\Madeline\LateLearning';
 
 %% making folders
 data_path = fullfile(root_path, 'Data'); % use fullfile to accomodate for different file separators in windows/osx
@@ -29,9 +29,10 @@ end
 
 %% iterate through every animal 
 for animal = 1:length(animals_to_process) % for each animal
-    if ~strcmp(animals_to_process(animal).name, '.') & ~strcmp(animals_to_process(animal).name, '..')
+    if ~strcmp(animals_to_process(animal).name, '.') & ~strcmp(animals_to_process(animal).name, '..') & ~strcmp(animals_to_process(animal).name, '.DS_Store')
         animal_folder = animals_to_process(animal).name; 
         animal_output = fullfile(output_folder, animal_folder);
+
         if ~exist(animal_output)
             mkdir(animal_output)
         end

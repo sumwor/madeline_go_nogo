@@ -16,15 +16,22 @@ end
 % corresponding index of stimulus_count. Then look at animal's behavior and
 % assign licks to each cue index when licking occurs
 % start at trial 2 because sometimes trial 1 doesn't play the tone
+trialTypes = zeros(1, numtrials);
 for trial = 2:numtrials
     stimulus_count(cues(trial)) = stimulus_count(cues(trial)) + 1;
     if cues(trial) == 8 || cues(trial) == 7 || cues(trial) == 6 || cues(trial) == 5 % nogo cues
         if behavior(trial) == 2.02 % nogo cue lick
             lick_count(cues(trial)) = lick_count(cues(trial)) + 1;
+            trialTypes(trial) = -1;
+        else
+            trialTypes(trial) = 0;
         end
     elseif cues(trial) < 5 % go cues
         if behavior(trial) < 2 % go cue lick
             lick_count(cues(trial)) = lick_count(cues(trial)) + 1;
+            trialTypes(trial) = 2;
+        else
+            trialTypes(trial) = -2;
         end
     end
 end

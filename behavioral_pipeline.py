@@ -14,12 +14,14 @@ import matplotlib.pyplot as plt
 import matplotlib
 
 from scipy.optimize import minimize
-from scipy.stats import norm, ttest_ind
+from scipy.stats import norm, ttest_ind, mannwhitneyu, wilcoxon
 import statsmodels.api as sm
 from statsmodels.formula.api import ols
+from statsmodels.stats.multicomp import pairwise_tukeyhsd
+from sklearn.metrics import accuracy_score, confusion_matrix, classification_report
 import time
 from statsmodels.stats.multicomp import MultiComparison
-
+import pingouin as pg
 
 import pandas as pd
 import pickle
@@ -110,7 +112,7 @@ class GoNogoBehaviorMat(BehaviorMat):
         self.trialN = len(self.hfile['beh/out/result'])
         self.eventlist, self.runningSpeed, \
             self.cutoff, self.dprime = self.initialize_node()
-
+        self.ifprobe = self.hfile['beh/ifprobe'][0][0]
         if self.cutoff != self.trialN:
             self.ifCut = True
         else:
@@ -197,7 +199,7 @@ class GoNogoBehaviorMat(BehaviorMat):
 
         result_df['trial'] = np.arange(1, self.trialN + 1)
         result_df['sound_num'] = pd.Categorical([""] * self.trialN, np.arange(1, 16 + 1), ordered=False)
-        result_df['reward'] = pd.Categorical([""] * self.trialN, [-1, 0, 1], ordered=False)
+        result_df['reward'] = pd.Categorical([""] * self.trialN, [-1, 0, 1,2], ordered=False)
         result_df['go_nogo'] = pd.Categorical([""] * self.trialN, ['go', 'nogo'], ordered=False)
         result_df['licks_out'] = np.full((self.trialN, 1), 0)
         result_df['quality'] = pd.Categorical(["normal"] * self.trialN, ['missed', 'abort', 'normal'], ordered=False)
@@ -241,6 +243,31 @@ class GoNogoBehaviorMat(BehaviorMat):
                 result_df.loc[node.trial_index()-1, 'outcome'] = node.etime-time_0
                 outcome = self.code_map[node.ecode][1]
                 # quality
+                # determine trialtype by event code
+                if node.ecode == 81.02:
+                    result_df.loc[node.trial_index()-1, 'reward'] = 0
+                    result_df.loc[node.trial_index()-1, 'choice'] = 1
+                    result_df.loc[node.trial_index()-1, 'trialType'] = 1
+                elif node.ecode == 81.12:
+                    result_df.loc[node.trial_index()-1, 'reward'] = 1
+                    result_df.loc[node.trial_index()-1, 'choice'] = 1
+                    result_df.loc[node.trial_index()-1, 'trialType'] = 1
+                elif node.ecode == 81.22:
+                    result_df.loc[node.trial_index()-1, 'reward'] = 2
+                    result_df.loc[node.trial_index()-1, 'choice'] = 1
+                    result_df.loc[node.trial_index()-1, 'trialType'] = 2
+                elif node.ecode == 81.01:
+                    result_df.loc[node.trial_index()-1, 'reward'] = 0
+                    result_df.loc[node.trial_index()-1, 'choice'] = 0
+                    result_df.loc[node.trial_index()-1, 'trialType'] = 0
+                elif node.ecode == 82.02:
+                    result_df.loc[node.trial_index()-1, 'reward'] = -1
+                    result_df.loc[node.trial_index()-1, 'choice'] = 1
+                    result_df.loc[node.trial_index()-1, 'trialType'] = -1
+                elif node.ecode == 83:
+                    result_df.loc[node.trial_index()-1, 'reward'] = -1
+                    result_df.loc[node.trial_index()-1, 'choice'] = 0
+                    result_df.loc[node.trial_index()-1, 'trialType'] = -2
                 if outcome in ['missed', 'abort']:
                     result_df.loc[node.trial_index()-1, 'quality'] = outcome
                 # reward
@@ -265,6 +292,7 @@ class GoNogoBehaviorMat(BehaviorMat):
 
             result_df['running_speed'] = [[] for _ in range(self.trialN)]
             result_df['running_time'] = [[] for _ in range(self.trialN)]
+        # save the running speed separately
 
         # remap trialType (eaiser for grouping trials based on cue and outcome）
         # -4: probeSti, no lick;
@@ -285,23 +313,6 @@ class GoNogoBehaviorMat(BehaviorMat):
                 elif tt == self.trialN-1:
                     result_df.at[tt, 'running_speed'] = self.runningSpeed[self.runningSpeed[:, 0] >= t_start-3, 1].tolist()
                     result_df.at[tt, 'running_time'] = self.runningSpeed[self.runningSpeed[:, 0] >= t_start - 3, 0].tolist()
-            # remap choice and reward
-            # choice: 1/0 lick/no lick
-            # reward: 1/0/-1 hit/correct rejection/false alarm,miss
-            result_df.at[tt, 'choice'] = 0 if result_df.at[tt, 'licks_out'] == 0 else 1
-            if result_df.sound_num[tt] in [9, 10, 11, 12, 13, 14, 15, 16]:
-                result_df.at[tt, 'reward'] = 0
-            elif result_df.sound_num[tt] in [1, 2, 3, 4]:
-                result_df.at[tt, 'reward'] = -1 if result_df.at[tt, 'licks_out']==0 else 1
-            elif result_df.sound_num[tt] in [5, 6, 7, 8]:
-                result_df.at[tt, 'reward'] = 0 if result_df.at[tt, 'licks_out']==0 else -1
-
-            if result_df.sound_num[tt] in [9, 10, 11, 12, 13, 14, 15, 16]:
-                result_df.at[tt, 'trialType'] = -4 if result_df.at[tt,'licks_out'] == 0 else -3
-            elif result_df.sound_num[tt] in [1, 2, 3, 4]:
-                result_df.at[tt, 'trialType'] = -2 if result_df.at[tt, 'licks_out'] == 0 else 2
-            elif result_df.sound_num[tt] in [5, 6, 7, 8]:
-                result_df.at[tt, 'trialType'] = 0 if result_df.at[tt, 'licks_out']==0 else -1
 
         # save the data into self
         self.DF = result_df
@@ -309,9 +320,9 @@ class GoNogoBehaviorMat(BehaviorMat):
 
         if self.ifCut:
             self.DFFull = self.DF
-            self.DF = self.DF.iloc[0:self.cutoff]
+            self.DF = self.DF.iloc[0:int(self.cutoff)]
             self.trialNFull = self.trialN
-            self.trialN = self.cutoff
+            self.trialN = int(self.cutoff)
 
         self.saveData['ifCut'] = self.ifCut
         self.saveData['cutoff'] = self.cutoff
@@ -487,7 +498,7 @@ class GoNogoBehaviorMat(BehaviorMat):
             #legend.get_frame().set_linewidth(0.0)
             #legend.get_frame().set_facecolor('none')
             beh_plots.fig.set_figwidth(40)
-            plt.show()
+            #plt.show()
 
             # save the plot
             beh_plots.save_plot('Behavior summary.svg', 'svg', save_path)
@@ -504,7 +515,83 @@ class GoNogoBehaviorMat(BehaviorMat):
 
         d_prime = norm.ppf(self.check_rate(Hit_rate)) - norm.ppf(self.check_rate(FA_rate))
 
+        # calculate d-prime after rewarded/not rewarded_trials
+        goMask = np.logical_or(self.DF['trialType']==2, self.DF['trialType']==-2)
+        nogoMask = np.logical_or(self.DF['trialType'] == -1, self.DF['trialType'] == 0)
+        prior_reward = pd.Series([np.nan]).append(self.DF.reward[0:-1], ignore_index=True)
+        numGo_R = np.sum(goMask &
+                             (self.DF.choice == 1) &
+                             (prior_reward == 1))
+        soundGo_R = np.sum(np.logical_and(goMask,
+                                            prior_reward == 1))
+        numNogo_R = np.sum(nogoMask &
+                             (self.DF.choice == 1) &
+                             (prior_reward == 1))
+        soundNogo_R = np.sum(np.logical_and(nogoMask,
+                                            prior_reward == 1))
+        d_prime_R = norm.ppf(self.check_rate(numGo_R/soundGo_R)) - norm.ppf(self.check_rate(numNogo_R/soundNogo_R))
+        Hit_rate_R = numGo_R/soundGo_R
+        FA_rate_R = numNogo_R/soundNogo_R
+
+        numGo_NR = np.sum(goMask &
+                             (self.DF.choice == 1) &
+                             (prior_reward == 0))
+        soundGo_NR = np.sum(np.logical_and(goMask,
+                                            prior_reward == 0))
+        numNogo_NR = np.sum(nogoMask &
+                             (self.DF.choice == 1) &
+                             (prior_reward == 0))
+        soundNogo_NR = np.sum(np.logical_and(nogoMask,
+                                            prior_reward == 0))
+        d_prime_NR = norm.ppf(self.check_rate(numGo_NR / soundGo_NR)) - norm.ppf(self.check_rate(numNogo_NR / soundNogo_NR))
+        Hit_rate_NR = numGo_NR/soundGo_NR
+        FA_rate_NR = numNogo_NR/soundNogo_NR
+
+        numGo_FA = np.sum(goMask &
+                             (self.DF.choice == 1) &
+                             (self.DF['trialType']==-1))
+        soundGo_FA = np.sum(np.logical_and(goMask,
+                                            self.DF['trialType']==-1))
+        numNogo_FA = np.sum(nogoMask &
+                             (self.DF.choice == 1) &
+                             (self.DF['trialType']==-1))
+        soundNogo_FA = np.sum(np.logical_and(nogoMask,
+                                            self.DF['trialType']==-1))
+
+        d_prime_FA = norm.ppf(self.check_rate(numGo_FA / soundGo_FA)) - norm.ppf(self.check_rate(numNogo_FA / soundNogo_FA))
+        Hit_rate_FA = numGo_FA/soundGo_FA
+        FA_rate_FA = numNogo_NR/soundNogo_FA
+
+        soundGo_CR = np.sum(goMask &
+                             (self.DF.choice == 1) &
+                             (self.DF['trialType']==0))
+        numGo_CR = np.sum(np.logical_and(goMask,
+                                            self.DF['trialType']==0))
+
+        soundNogo_CR  = np.sum(nogoMask &
+                             (self.DF.choice == 1) &
+                             (self.DF['trialType']==0))
+        numNogo_CR = np.sum(np.logical_and(nogoMask,
+                                            self.DF['trialType']==0))
+        d_prime_CR = norm.ppf(self.check_rate(numGo_CR / soundGo_CR)) - norm.ppf(self.check_rate(numNogo_CR / soundNogo_CR))
+        Hit_rate_CR = numGo_CR/soundGo_CR
+        FA_rate_CR = numNogo_CR/soundNogo_CR
+
+        self.saveData['Hit_rate'] = Hit_rate
+        self.saveData['Hit_rate_R'] = Hit_rate_R
+        self.saveData['Hit_rate_NR'] = Hit_rate_NR
+        self.saveData['Hit_rate_FA'] = Hit_rate_NR
+        self.saveData['Hit_rate_CR'] = Hit_rate_NR
+        self.saveData['FA_rate'] = FA_rate
+        self.saveData['FA_rate_R'] = FA_rate_R
+        self.saveData['FA_rate_NR'] = FA_rate_NR
+        self.saveData['FA_rate_FA'] = FA_rate_FA
+        self.saveData['FA_rate_CR'] = FA_rate_CR
         self.saveData['d-prime'] = d_prime
+        self.saveData['d-prime-R'] = d_prime_R
+        self.saveData['d-prime-NR'] = d_prime_NR
+        self.saveData['d-prime-FA'] = d_prime_FA
+        self.saveData['d-prime-FA'] = d_prime_FA
 
     def check_rate(self, rate):
         # for d-prime calculation
@@ -523,6 +610,8 @@ class GoNogoBehaviorMat(BehaviorMat):
         # use logistic regression
         # L(P(go)/(1-P(go)) = beta0 + beta_Go*S_Go + beta_NoGo * S_NoGo
         # reference: Breton-Provencher, 2022
+
+        # seprate psych curve based on outcome of the previous trial
         plotname = os.path.join(save_path,'psychometric.svg')
         if not os.path.exists(plotname) or ifrun:
             numSound = 16
@@ -536,10 +625,14 @@ class GoNogoBehaviorMat(BehaviorMat):
             probeFreq = np.array([6.77, 7.73, 8.81, 9.71, 10.29, 11.38, 12.97, 14.76])
             midFreq = (9.17+10.9)/2
 
-            # %%
+            #
             # psychometric curve
             sound = np.arange(1, numSound + 1)
             numGo = np.zeros(numSound)
+            numGo_R = np.zeros(numSound) # go with prior reward
+            numGo_NR = np.zeros(numSound)  # go without prior reward
+            sound_R = np.arange(1, numSound + 1)
+            sound_NR = np.arange(1, numSound + 1)
 
             # sort sound, base on the frequency
             soundIndTotal = np.concatenate((goCueInd, nogoCueInd, probeCueInd))
@@ -554,14 +647,39 @@ class GoNogoBehaviorMat(BehaviorMat):
             for ss in range(len(numGo)):
                 numGo[ss] = np.sum(np.logical_and(self.DF.sound_num == ss + 1,
                     self.DF.choice == 1))
-
                 sound[ss] = np.sum(self.DF.sound_num == ss+1)
 
+                # for prior reward
+                prior_reward = pd.Series([np.nan]).append(self.DF.reward[0:-1], ignore_index=True)
+                numGo_R[ss] = np.sum((self.DF.sound_num == ss+1) &
+                                     (self.DF.choice == 1) &
+                                     (prior_reward == 1))
+                sound_R[ss] = np.sum(np.logical_and(self.DF.sound_num == ss+1,
+                                                  prior_reward == 1))
+
+
+                numGo_NR[ss] = np.sum(np.sum((self.DF.sound_num == ss+1) &
+                                     (self.DF.choice == 1) &
+                                     (prior_reward < 1)))
+                sound_NR[ss] = np.sum(np.logical_and(self.DF.sound_num == ss+1,
+                                                  prior_reward < 1))
             sortednumGo = numGo[sortedInd]
             sortednumSound = sound[sortedInd]
+            sortednumGo_R = numGo_R[sortedInd]
+            sortednumSound_R = sound_R[sortedInd]
+            sortednumGo_NR = numGo_NR[sortedInd]
+            sortednumSound_NR = sound_NR[sortedInd]
+            ## pyschometric curve separated by previous outcome
 
             # save the data and frequency
-            self.saveData['psycho_data'] = sortednumGo/sortednumSound
+            psycho_data = {'numGo': sortednumGo,
+                           'numSound': sortednumSound,
+                           'numGo_R': sortednumGo_R,
+                           'numSound_R': sortednumSound_R,
+                           'numGo_NR': sortednumGo_NR,
+                           'numSound_NR': sortednumSound_NR}
+
+            self.saveData['psycho_data'] = psycho_data
             self.saveData['psycho-sti'] = soundFreqTotal[sortedInd]
 
             # fit logistic regression
@@ -578,18 +696,13 @@ class GoNogoBehaviorMat(BehaviorMat):
             x = sm.add_constant(x)
 
             if np.count_nonzero(~np.isnan(y)) > 2:
-
-
                 # drop nan values
                 keepInd = np.logical_not(np.isnan(y))
                 y = y[keepInd]
                 x = x[keepInd,:]
-
                 model = sm.Logit(y, x).fit(disp=False)
-
                 # save the data
                 self.saveData['L-fit'] = model.params
-
                 # generating x for model prediction
                 x_pred = np.array((np.linspace(6,16, 50), np.linspace(6,16, 50)))
                 x_pred[0,x_pred[0,:]>midFreq] = 0
@@ -598,21 +711,17 @@ class GoNogoBehaviorMat(BehaviorMat):
                 x_pred = sm.add_constant(x_pred)
                 y_pred = model.predict(x_pred)
 
-                #xNoGo_fit = np.linspace(6,16, 50)
-                #yNoGo_fit = self.softmax(result_NoGo.x, xNoGo_fit-midFreq)
-
                 psyCurve = StartPlots()
                 psyCurve.ax.scatter(sortedFreqTotal[stiSortedInd], sortednumGo[stiSortedInd] / sortednumSound[stiSortedInd])
                 psyCurve.ax.scatter(sortedFreqTotal[probeSortedInd], sortednumGo[probeSortedInd] / sortednumSound[probeSortedInd])
                 psyCurve.ax.plot(np.linspace(6,16, 50), y_pred)
-                #psyCurve.ax.plot(xNoGo_fit, yNoGo_fit)
 
                 psyCurve.ax.plot([midFreq, midFreq], [0, 1], linestyle='--')
 
                 # ax.legend()
                 psyCurve.ax.set_xlabel('Sound (kHz)')
                 psyCurve.ax.set_ylabel('Go rate')
-                plt.show()
+                #plt.show()
 
                 psyCurve.save_plot('psychometric.svg', 'svg', save_path)
                 psyCurve.save_plot('psychometric.tif', 'tif', save_path)
@@ -635,7 +744,7 @@ class GoNogoBehaviorMat(BehaviorMat):
             binSize = 0.05  # use a 0.05s window for lick rate
             edges = np.arange(0 + binSize / 2, 5 - binSize / 2, binSize)
 
-            for tt in range(self.trialN):
+            for tt in range(int(self.trialN)):
                 if self.DF.trialType[tt] == 2:
                     lickTimesH = np.concatenate((lickTimesH, (np.array(self.DF.licks[tt]) - self.DF.onset[tt])))
                     lickSoundH = np.concatenate((lickSoundH, np.ones(len(np.array(self.DF.licks[tt])))*self.DF.sound_num[tt]))
@@ -692,7 +801,7 @@ class GoNogoBehaviorMat(BehaviorMat):
 
             lickRate.ax.legend(['Hit', 'False alarm','Probe lick'])
 
-            plt.show()
+            #plt.show()
 
             lickRate.save_plot('lick rate.svg', 'svg', save_path)
             lickRate.save_plot('lick rate.tif', 'tif', save_path)
@@ -741,7 +850,7 @@ class GoNogoBehaviorMat(BehaviorMat):
 
             rtPlot.ax.legend(['Hit', 'False alarm'])
 
-            plt.show()
+            #plt.show()
 
             rtPlot.save_plot('Response time.svg', 'svg', save_path)
             rtPlot.save_plot('Response time.tif', 'tif', save_path)
@@ -779,7 +888,7 @@ class GoNogoBehaviorMat(BehaviorMat):
             binSize = 0.05  # use a 0.05s window for lick rate
             edges = np.arange(0 + binSize / 2, 20- binSize / 2, binSize)
 
-            for tt in range(self.trialN-1):
+            for tt in range(int(self.trialN)-1):
                 if self.DF.trialType[tt] == 2:
 
                     ITIH.append(self.DF.onset[tt+1] - self.DF.outcome[tt])
@@ -818,7 +927,7 @@ class GoNogoBehaviorMat(BehaviorMat):
 
             ITIPlot.ax.legend(['Hit', 'False alarm'])
 
-            plt.show()
+            #plt.show()
 
             ITIPlot.save_plot('ITI.svg', 'svg', save_path)
             ITIPlot.save_plot('ITI.tif', 'tif', save_path)
@@ -838,6 +947,39 @@ class GoNogoBehaviorMat(BehaviorMat):
             # plt.subplots_adjust(top=0.85)
             # plt.show()
 
+    def logistic_regression(self, save_path, ifrun):
+        # logistic regression based on previous choice and outcome
+        # regressors = choice, choice x reward
+        if ifrun:
+            # create the regressor vectors
+            # choice: go: 1; no-go: 0
+            # outcome: reward: 1; no reward: 0
+            C = np.array([1 if c==1 else 0 for c in self.DF['choice']])
+            O = np.array([1 if o > 0 else 0 for o in self.DF['reward']])
+            CO = C*O
+
+            # get n-trial back vectors
+            n_back = 15
+            X = np.zeros((len(C)-n_back, 2*n_back))
+            for idx in range(len(C)-n_back):
+                for jdx in range(n_back):
+                    X[idx,jdx] = C[idx+n_back-jdx-1]
+                    X[idx,jdx+n_back] = CO[idx+n_back-jdx-1]
+            y = C[n_back:]
+
+            X = sm.add_constant(X)  # Add a constant (intercept) term to the model
+            model = sm.Logit(y, X)  # Create the logistic regression model
+            result = model.fit()
+            coefficients = result.params
+            pvalues = result.pvalues
+            # plot the coefficients
+            C_coeff = coefficients[1:n_back+1][::-1]
+            C_pvalue = pvalues[1:n_back+1][::-1]
+            CO_coeff = coefficients[n_back+1:][::-1]
+            CO_pvalue = pvalues[n_back+1:][::-1]
+            lag = np.arange(-n_back,0)
+
+            self.saveData['Log-regress'] = {'Choice':C_coeff,'ChoicexReward':CO_coeff,'lag':lag}
 
     def running_aligned(self, aligned_to, save_path, ifrun):
         """
@@ -1007,6 +1149,8 @@ class GoNogoBehaviorSum:
         summary_dir = 'Summary'
 
         animals = os.listdir(os.path.join(root_dir, data_dir))
+        if '.DS_Store' in animals:
+            animals.remove('.DS_Store')
 
         # initialize the dataframe
         columns = ['subject', 'age','date',
@@ -1021,24 +1165,25 @@ class GoNogoBehaviorSum:
             sessions = os.listdir(animal_path)
 
             for session in sessions:
-                matFile = glob.glob(os.path.join(animal_path, session, '*.mat'))
-                separated = matFile[0].split(os.sep)
-                data = pd.DataFrame({
-                    'subject': animal,
-                    'date': separated[-2],
-                    'age': animal[0:3],
-                    'beh_data_path': matFile,
-                    'beh_analysis_dir': os.path.join(root_dir, analysis_dir,
+                if session != '.DS_Store':
+                    matFile = glob.glob(os.path.join(animal_path, session, '*.mat'))
+                    separated = matFile[0].split(os.sep)
+                    data = pd.DataFrame({
+                        'subject': animal,
+                        'date': separated[-2],
+                        'age': animal[0:3],
+                        'beh_data_path': matFile,
+                        'beh_analysis_dir': os.path.join(root_dir, analysis_dir,
                                                      animal, separated[-2], 'behavior'),
-                    'fluo_data_dir': os.path.join(root_dir, data_dir,
+                        'fluo_data_dir': os.path.join(root_dir, data_dir,
                                                   animal, separated[-2],'suite2p','plane0'),
 
-                    'fluo_analysis_dir': os.path.join(root_dir, analysis_dir,
+                        'fluo_analysis_dir': os.path.join(root_dir, analysis_dir,
                                               animal, separated[-2],'fluo'),
-                    'dprime': np.nan
-                }, index=[Ind])
-                Ind = Ind + 1
-                beh_df = pd.concat([beh_df, data])
+                        'dprime': np.nan
+                    }, index=[Ind])
+                    Ind = Ind + 1
+                    beh_df = pd.concat([beh_df, data])
 
         self.beh_df = beh_df
         self.beh_dict = dict()
@@ -1058,8 +1203,17 @@ class GoNogoBehaviorSum:
             self.beh_df.at[f,'dprime'] = x.dprime
 
             x.to_df()
+            # save running speed file
             output_path = self.beh_df.iloc[f]['beh_analysis_dir']
+            if not os.path.exists(output_path):
+                os.makedirs(output_path)
             plot_path = os.path.join(output_path, 'beh_plot')
+
+            saverunningpath = os.path.join(output_path,'running_speed.csv')
+            runningDF = {'time':x.runningSpeed[:,0],
+                         'speed':x.runningSpeed[:,1]}
+            runningDF = pd.DataFrame(runningDF)
+            runningDF.to_csv(saverunningpath)
 
             # x.beh_cut(plot_path)
             # run analysis_beh
@@ -1071,6 +1225,7 @@ class GoNogoBehaviorSum:
             x.lick_rate(plot_path, ifrun)
             x.ITI_distribution(plot_path, ifrun)
             x.response_time(plot_path, ifrun)
+            #x.logistic_regression(plot_path,ifrun)
             x.running_aligned('onset', plot_path, ifrun)
             x.running_aligned('outcome', plot_path, ifrun)
             x.running_aligned('licks', plot_path, ifrun)
@@ -1151,9 +1306,10 @@ class GoNogoBehaviorSum:
                 self.beh_dict['animal'] = [None] * nFiles
                 self.beh_dict['session'] = [None] * nFiles
                 self.beh_dict['stiFreq'] = my_data['psycho-sti']
-
+                self.beh_dict['psycho_data'] = {}
             self.beh_dict['animal'][ff] = my_data['behDF'].iloc[0]['animal']
             self.beh_dict['session'][ff] = my_data['behDF'].iloc[0]['session']
+
             self.trainSti[ff] = len(np.unique(my_data['behDF']['sound_num']))
 
            # initialize the summary dictionary if it is the first file
@@ -1184,6 +1340,11 @@ class GoNogoBehaviorSum:
                                 self.beh_dict[key] = np.zeros((arrShape[0], arrShape[1], nFiles))
                             # set value
                             self.beh_dict[key][:,:,ff] = my_data[key]['run_aligned']
+                        elif key == 'psycho_data':
+                            for kk in my_data[key].keys():
+                                if ff==0:
+                                    self.beh_dict[key][kk] = np.zeros((len(my_data[key][kk]),nFiles))
+                                self.beh_dict[key][kk][:,ff] = my_data[key][kk]
                     else:
                         if ff == 0:
                             # a single value
@@ -1191,7 +1352,24 @@ class GoNogoBehaviorSum:
                         # set value
                         self.beh_dict[key][ff] = my_data[key]
 
-    def plot_dP(self, save_path):
+    def plot_dP_ave(self, save_path):
+        # plot average dP separated by age/prior outcome
+        tempAnimal = self.beh_dict['animal']
+
+        ADTInd = [i for i in range(len(tempAnimal)) if 'ADT' in tempAnimal[i]]
+        JUVInd = [i for i in range(len(tempAnimal)) if 'JUV' in tempAnimal[i]]
+
+        # average d-prime for all trials
+        dP_ADT = self.beh_dict['d-prime'][ADTInd]
+        dP_JUV = self.beh_dict['d-prime'][JUVInd]
+
+        dP_ADT_R = self.beh_dict['d-prime-R'][ADTInd]
+        dP_JUV_R = self.beh_dict['d-prime-R'][JUVInd]
+        dP_ADT_NR = self.beh_dict['d-prime-NR'][ADTInd]
+        dP_JUV_NR = self.beh_dict['d-prime-NR'][JUVInd]
+
+        # bar plot
+    def plot_running_dP(self, save_path):
         # plot d-prime progress by animals
         # concatenate sessions from one animla, calculate running/block d-prime (50 trials)
         # also separated by number of stimulus presented
@@ -1756,16 +1934,18 @@ class GoNogoBehaviorSum:
         # for different stages, plot the average psychometric curve for adult and juvenile animal separately
         # need to get last 3 sessions for all animals (suppose to be more stable
         wholeSess = np.arange(len(self.trainSti))
-        sessionInd =[]
-        for aa in np.unique(self.beh_dict['animal']):
-            sess = np.array(wholeSess[np.logical_and([True if a==aa else False for a in self.beh_dict['animal']],
-                                            self.trainSti>=8)])
-            for s in sess[-5:]:
-                sessionInd.append(s)
+        # sessionInd =[]
+        #for aa in np.unique(self.beh_dict['animal']):
+        #    sess = np.array(wholeSess[np.logical_and([True if a==aa else False for a in self.beh_dict['animal']],
+        #                                    self.trainSti>=8)])
+        #    for s in sess[-5:]:
+        #        sessionInd.append(s)
 
-        tempL_fit = self.beh_dict['L-fit'][:,sessionInd]
-        tempPsycho_data = self.beh_dict['psycho_data'][:,sessionInd]
-        tempAnimal = [self.beh_dict['animal'][i] for i in sessionInd]
+        adtColor = (83/255,187/255,244/255)
+        juvColor = (255/255,67/255,46/255)
+
+        tempL_fit = self.beh_dict['L-fit']
+        tempAnimal = self.beh_dict['animal']
 
         ADTInd = [i for i in range(len(tempAnimal)) if 'ADT' in tempAnimal[i]]
         JUVInd = [i for i in range(len(tempAnimal)) if 'JUV' in tempAnimal[i]]
@@ -1773,56 +1953,141 @@ class GoNogoBehaviorSum:
         probeInd = [1, 3, 5, 7, 8, 10, 12, 14]
         taskInd = [0, 2, 4, 6, 9, 11, 13, 15]
 
+        # regroup by subject
+        Subject = np.unique(tempAnimal)
+        ADTSub = [sub for sub in Subject if 'ADT' in sub]
+        JUVSub = [sub for sub in Subject if 'JUV' in sub]
 
-        meanADTChoice = np.nanmean(tempPsycho_data[:,ADTInd],1)
-        steADTChoice = np.nanstd(tempPsycho_data[:,ADTInd],1)/np.sqrt(
-            np.count_nonzero(~np.isnan(tempPsycho_data[:,ADTInd]), axis=1))
+        ADTGo_sub = np.zeros((self.beh_dict['psycho_data']['numGo'].shape[0], len(ADTSub)))
+        ADTSound_sub = np.zeros((self.beh_dict['psycho_data']['numGo'].shape[0], len(ADTSub)))
+        for idx in ADTInd:
+            subInd = np.where(np.array(ADTSub)==tempAnimal[idx])[0]
+            ADTGo_sub[:,subInd] = ADTGo_sub[:,subInd]+self.beh_dict['psycho_data']['numGo'][:,idx][:,np.newaxis]
+            ADTSound_sub[:, subInd] = ADTSound_sub[:, subInd] + self.beh_dict['psycho_data']['numSound'][:, idx][:, np.newaxis]
 
-        meanJUVChoice = np.nanmean(tempPsycho_data[:,JUVInd],1)
-        steJUVChoice = np.nanstd(tempPsycho_data[:,JUVInd],1)/np.sqrt(
-            np.count_nonzero(~np.isnan(tempPsycho_data[:,JUVInd]), axis=1))
+        JUVGo_sub = np.zeros((self.beh_dict['psycho_data']['numGo'].shape[0], len(JUVSub)))
+        JUVSound_sub = np.zeros((self.beh_dict['psycho_data']['numGo'].shape[0], len(JUVSub)))
+        for idx in JUVInd:
+            subInd = np.where(np.array(JUVSub)==tempAnimal[idx])[0]
+            JUVGo_sub[:,subInd] = JUVGo_sub[:,subInd]+self.beh_dict['psycho_data']['numGo'][:,idx][:,np.newaxis]
+            JUVSound_sub[:, subInd] = JUVSound_sub[:, subInd] + self.beh_dict['psycho_data']['numSound'][:, idx][:,
+                                                                np.newaxis]
 
-        adtColor = (255 / 255, 189 / 255, 53 / 255)
-        juvColor = (63 / 255, 167 / 255, 150 / 255)
+        label = 'all trials subject'
+        self.generate_psycho_plot(ADTGo_sub / ADTSound_sub, JUVGo_sub / JUVSound_sub,
+                                  taskInd, probeInd, adtColor, juvColor, label, save_path)
 
-        psycho_plot = StartPlots()
-        psycho_plot.ax.scatter(self.beh_dict['stiFreq'][taskInd],meanADTChoice[taskInd],
-                               marker='.', s = 100, c=adtColor,label='_nolegend_')
-        psycho_plot.ax.errorbar(self.beh_dict['stiFreq'][taskInd],meanADTChoice[taskInd],
-                    yerr=steADTChoice[taskInd], fmt='none', ecolor=adtColor,label='_nolegend_')
-        psycho_plot.ax.scatter(self.beh_dict['stiFreq'][probeInd], meanADTChoice[probeInd],
-                               marker='s', c=adtColor, label='_nolegend_')
-        psycho_plot.ax.errorbar(self.beh_dict['stiFreq'][probeInd], meanADTChoice[probeInd],
-                                yerr=steADTChoice[probeInd], fmt='none', ecolor=adtColor, label='_nolegend_')
+        # plot psychometric curve for all sessions
+        ADTGo = self.beh_dict['psycho_data']['numGo'][:,ADTInd]
+        ADTSound = self.beh_dict['psycho_data']['numSound'][:,ADTInd]
+        meanADT = np.nanmean(ADTGo/ADTSound,1)
+        steADT = np.nanstd(ADTGo/ADTSound,1)/np.sqrt(len(ADTInd))
 
-        psycho_plot.ax.scatter(self.beh_dict['stiFreq'][taskInd],meanJUVChoice[taskInd],
-                               marker='.', s = 100, c=juvColor, label='_nolegend_')
-        psycho_plot.ax.errorbar(self.beh_dict['stiFreq'][taskInd],meanJUVChoice[taskInd],
-                    yerr=steJUVChoice[taskInd], fmt='none', ecolor=juvColor, label='_nolegend_')
-        psycho_plot.ax.scatter(self.beh_dict['stiFreq'][probeInd], meanJUVChoice[probeInd],
-                               marker='s', c=juvColor, label='_nolegend_')
-        psycho_plot.ax.errorbar(self.beh_dict['stiFreq'][probeInd], meanJUVChoice[probeInd],
-                                yerr=steJUVChoice[probeInd], fmt='none', ecolor=juvColor, label='_nolegend_')
+        JUVGo = self.beh_dict['psycho_data']['numGo'][:,JUVInd]
+        JUVSound = self.beh_dict['psycho_data']['numSound'][:,JUVInd]
+        meanJUV = np.nanmean(JUVGo/JUVSound,1)
+        steJUV = np.nanstd(JUVGo/JUVSound,1)/np.sqrt(len(JUVInd))
 
-        # run statistic analysis:
-        # t-test
-        pVal = np.zeros(tempPsycho_data.shape[0])
-        for i in range(tempPsycho_data.shape[0]):
-            _, pVal[i] = ttest_ind(tempPsycho_data[i,JUVInd], tempPsycho_data[i,ADTInd], nan_policy='omit')
+
+
+        label = 'all trials'
+        self.generate_psycho_plot(ADTGo / ADTSound, JUVGo / JUVSound,
+                                  taskInd, probeInd, adtColor, juvColor, label, save_path)
 
         # anova
         cue_anova = []
         age_anova = []
         response_anova = []
 
+        tempPsycho_data = self.beh_dict['psycho_data']['numGo']/self.beh_dict['psycho_data']['numSound']
         # loop through every group
         for t in range(tempPsycho_data.shape[1]):
-            for cue in range(tempPsycho_data.shape[0]):
+            for cidx,cue in enumerate(taskInd[4:]):
+                if not np.isnan(tempPsycho_data[cue,t]):
+                    if t in ADTInd:
+                        age_anova.append('ADT')
+                    elif t in JUVInd:
+                        age_anova.append('JUV')
+                    cue_anova.append(str(cidx+1))
+                    response_anova.append(tempPsycho_data[cue,t])
+
+        anova_data = pd.DataFrame({'age': age_anova,
+                                   'cue': cue_anova,
+                                   'response': response_anova
+                                   })
+        model = ols('response ~ age + cue + age:cue', anova_data).fit()
+        anova_table = sm.stats.anova_lm(model, typ=2)
+        # print ANOVA table
+        print(anova_table)
+        # post-hoc pairwise test
+        pairwise_result = pg.pairwise_ttests(data=anova_data,
+                                             dv = 'response', between = ['cue','age'],
+                                             parametric = False,padjust = 'fdr_bh')
+        print(pairwise_result.iloc[29:])
+
+
+        # plot the fitted results
+        # bootstrap to get the mean parameter of the fitted result
+
+        # plot average choice curve and fitted curve
+        # plot average data with standard error and average fitted curve
+        #
+        # fit_x = np.linspace(self.beh_dict['stiFreq'][0], self.beh_dict['stiFreq'][-1], 50)
+        #
+        # midFreq = (self.beh_dict['stiFreq'][6] + self.beh_dict['stiFreq'][9])/2
+        # x_1 = np.linspace(self.beh_dict['stiFreq'][0], self.beh_dict['stiFreq'][-1], 50)
+        # x_1[fit_x>midFreq] = 0
+        # x_2 = np.linspace(self.beh_dict['stiFreq'][0], self.beh_dict['stiFreq'][-1], 50)
+        # x_2[fit_x<midFreq] = 0
+        #
+        # x_model = np.array([np.ones(len(fit_x)),x_1,x_2])
+        #
+        # X = np.dot(np.transpose(tempL_fit[:, ADTInd]), x_model)
+        # logit_X = 1/(1+np.exp(-X))
+        # L_ADT = bootstrap(np.transpose(logit_X), 1, 3, 1000)
+        #
+        # X = np.dot(np.transpose(tempL_fit[:, JUVInd]), x_model)
+        # logit_X = 1/(1+np.exp(-X))
+        # L_JUV = bootstrap(np.transpose(logit_X), 1, 3, 1000)
+        #
+        # # plot the fitted curve
+        # X = L_ADT['bootAve']
+        # psycho_plot.ax.plot(fit_x, L_ADT['bootAve'], color=adtColor, label='Adult')
+        # psycho_plot.ax.fill_between(fit_x, L_ADT['bootLow'],
+        #                         L_ADT['bootHigh'], color=adtColor, alpha=0.2, label='_nolegend_')
+        #
+        # psycho_plot.ax.plot(fit_x, L_JUV['bootAve'], color=juvColor, label='Juvenile')
+        # psycho_plot.ax.fill_between(fit_x, L_JUV['bootLow'],
+        #                         L_JUV['bootHigh'], color=juvColor, alpha=0.2, label='_nolegend_')
+        #
+        #
+        # psycho_plot.ax.plot()
+
+        ## psychometric curve for previously rewarded trial
+        ## plot pyschometric for previously rewarded trial
+        ADTGo_R = self.beh_dict['psycho_data']['numGo_R'][:, ADTInd]
+        ADTSound_R = self.beh_dict['psycho_data']['numSound_R'][:, ADTInd]
+
+        JUVGo_R = self.beh_dict['psycho_data']['numGo_R'][:, JUVInd]
+        JUVSound_R = self.beh_dict['psycho_data']['numSound_R'][:, JUVInd]
+
+        label = 'reward'
+        self.generate_psycho_plot(ADTGo_R / ADTSound_R, JUVGo_R / JUVSound_R,
+                                  taskInd, probeInd, adtColor, juvColor, label, save_path)
+
+        cue_anova = []
+        age_anova = []
+        response_anova = []
+
+        tempPsycho_data = self.beh_dict['psycho_data']['numGo_R']/self.beh_dict['psycho_data']['numSound_R']
+        # loop through every group
+        for t in range(tempPsycho_data.shape[1]):
+            for cidx,cue in enumerate(taskInd):
                 if t in ADTInd:
                     age_anova.append('ADT')
                 elif t in JUVInd:
                     age_anova.append('JUV')
-                cue_anova.append(str(cue+1))
+                cue_anova.append(str(cidx+1))
                 response_anova.append(tempPsycho_data[cue,t])
 
         anova_data = pd.DataFrame({'age': age_anova,
@@ -1831,57 +2096,201 @@ class GoNogoBehaviorSum:
                                    })
         model = ols('response ~ age + cue + age:cue', anova_data).fit()
         anova_table = sm.stats.anova_lm(model, typ=2)
-
         # print ANOVA table
         print(anova_table)
+        # post-hoc pairwise test
+        pairwise_result = pg.pairwise_ttests(data=anova_data,
+                                             dv = 'response', between = ['cue','age'],
+                                             parametric = False,padjust = 'fdr_bh')
+        print(pairwise_result.iloc[28:])
 
-        # plot significance
-        # for tt in range(tempPsycho_data.shape[0]):
-        #     if pVal[tt] < 0.05:
-        #         dP_plot.ax.plot(xAxis[tt] + 1 * np.array([-0.5, 0.5]), [4, 4],
-        #                         color=(1, 0, 0), linewidth=5)
+        ## plot pyschometric for previously enrewarded trial
+        ADTGo_NR = self.beh_dict['psycho_data']['numGo_NR'][:,ADTInd]
+        ADTSound_NR = self.beh_dict['psycho_data']['numSound_NR'][:,ADTInd]
 
-        # plot the fitted results
-        # bootstrap to get the mean parameter of the fitted result
+        JUVGo_NR = self.beh_dict['psycho_data']['numGo_NR'][:,JUVInd]
+        JUVSound_NR = self.beh_dict['psycho_data']['numSound_NR'][:,JUVInd]
 
-        # plot average choice curve and fitted curve
-        # plot average data with standard error and average fitted curve
+        label = 'noreward'
+        self.generate_psycho_plot(ADTGo_NR/ADTSound_NR, JUVGo_NR/JUVSound_NR,
+                                  taskInd, probeInd, adtColor, juvColor,label,save_path)
 
-        fit_x = np.linspace(self.beh_dict['stiFreq'][0], self.beh_dict['stiFreq'][-1], 50)
+        cue_anova = []
+        age_anova = []
+        response_anova = []
 
-        midFreq = (self.beh_dict['stiFreq'][6] + self.beh_dict['stiFreq'][9])/2
-        x_1 = np.linspace(self.beh_dict['stiFreq'][0], self.beh_dict['stiFreq'][-1], 50)
-        x_1[fit_x>midFreq] = 0
-        x_2 = np.linspace(self.beh_dict['stiFreq'][0], self.beh_dict['stiFreq'][-1], 50)
-        x_2[fit_x<midFreq] = 0
+        tempPsycho_data = self.beh_dict['psycho_data']['numGo_NR']/self.beh_dict['psycho_data']['numSound_NR']
+        # loop through every group
+        for t in range(tempPsycho_data.shape[1]):
+            for cidx,cue in enumerate(taskInd):
+                if t in ADTInd:
+                    age_anova.append('ADT')
+                elif t in JUVInd:
+                    age_anova.append('JUV')
+                cue_anova.append(str(cidx+1))
+                response_anova.append(tempPsycho_data[cue,t])
 
-        x_model = np.array([np.ones(len(fit_x)),x_1,x_2])
+        anova_data = pd.DataFrame({'age': age_anova,
+                                   'cue': cue_anova,
+                                   'response': response_anova
+                                   })
+        model = ols('response ~ age + cue + age:cue', anova_data).fit()
+        anova_table = sm.stats.anova_lm(model, typ=2)
+        # print ANOVA table
+        print(anova_table)
+        # post-hoc pairwise test
+        pairwise_result = pg.pairwise_ttests(data=anova_data,
+                                             dv = 'response', between = ['cue','age'],
+                                             parametric = False,padjust = 'fdr_bh')
+        print(pairwise_result.iloc[28:])
 
-        X = np.dot(np.transpose(tempL_fit[:, ADTInd]), x_model)
-        logit_X = 1/(1+np.exp(-X))
-        L_ADT = bootstrap(np.transpose(logit_X), 1, 3, 1000)
+        # compare reward/unrewared trials within age group
+        # rewarded trial
+        RColor = 'purple'
+        NRColor = 'black'
+        label = 'ADT'
+        self.generate_psycho_plot(ADTGo_R/ADTSound_R, ADTGo_NR/ADTSound_NR,
+                                  taskInd, probeInd, RColor, NRColor, label,save_path)
+        cue_anova = []
+        outcome_anova = []
+        response_anova = []
 
-        X = np.dot(np.transpose(tempL_fit[:, JUVInd]), x_model)
-        logit_X = 1/(1+np.exp(-X))
-        L_JUV = bootstrap(np.transpose(logit_X), 1, 3, 1000)
+        tempPsycho_data =np.concatenate((ADTGo_R/ADTSound_R,ADTGo_NR/ADTSound_NR),axis=1)
+        for t in range(tempPsycho_data.shape[1]):
+            for cidx,cue in enumerate(taskInd):
+                if t<len(ADTGo_R):
+                    outcome_anova.append('R')
+                else:
+                    outcome_anova.append('NR')
+                cue_anova.append(str(cidx+1))
+                response_anova.append(tempPsycho_data[cue,t])
 
-        # plot the fitted curve
-        X = L_ADT['bootAve']
-        psycho_plot.ax.plot(fit_x, L_ADT['bootAve'], color=adtColor, label='Adult')
-        psycho_plot.ax.fill_between(fit_x, L_ADT['bootLow'],
-                                L_ADT['bootHigh'], color=adtColor, alpha=0.2, label='_nolegend_')
+        anova_data = pd.DataFrame({'outcome': outcome_anova,
+                                   'cue': cue_anova,
+                                   'response': response_anova
+                                   })
+        model = ols('response ~ outcome + cue + outcome:cue', anova_data).fit()
+        anova_table = sm.stats.anova_lm(model, typ=2)
+        # print ANOVA table
+        print(anova_table)
+        # post-hoc pairwise test
+        pairwise_result = pg.pairwise_ttests(data=anova_data,
+                                             dv = 'response', between = ['cue','outcome'],
+                                             parametric = False,padjust = 'fdr_bh')
+        print(pairwise_result.iloc[28:])
 
-        psycho_plot.ax.plot(fit_x, L_JUV['bootAve'], color=juvColor, label='Juvenile')
-        psycho_plot.ax.fill_between(fit_x, L_JUV['bootLow'],
-                                L_JUV['bootHigh'], color=juvColor, alpha=0.2, label='_nolegend_')
+        # JUV group
+        label='JUV'
+        self.generate_psycho_plot(JUVGo_R/JUVSound_R, JUVGo_NR/JUVSound_NR,
+                                  taskInd, probeInd, RColor, NRColor, label,save_path)
+        cue_anova = []
+        outcome_anova = []
+        response_anova = []
 
-        psycho_plot.legend(['Adult', 'Juvenile'])
+        tempPsycho_data =np.concatenate((JUVGo_R/JUVSound_R,JUVGo_NR/JUVSound_NR),axis=1)
+        for t in range(tempPsycho_data.shape[1]):
+            for cidx,cue in enumerate(taskInd):
+                if not np.isnan(tempPsycho_data[cue,t]):
+                    if t<len(JUVGo_R):
+                        outcome_anova.append('R')
+                    else:
+                        outcome_anova.append('NR')
+                    cue_anova.append(str(cidx+1))
+                    response_anova.append(tempPsycho_data[cue,t])
+
+        anova_data = pd.DataFrame({'outcome': outcome_anova,
+                                   'cue': cue_anova,
+                                   'response': response_anova
+                                   })
+        model = ols('response ~ outcome + cue + outcome:cue', anova_data).fit()
+        anova_table = sm.stats.anova_lm(model, typ=2)
+        # print ANOVA table
+        print(anova_table)
+        # post-hoc pairwise test
+        pairwise_result = pg.pairwise_ttests(data=anova_data,
+                                             dv = 'response', between = ['cue','outcome'],
+                                             parametric = False,padjust = 'fdr_bh')
+        print(pairwise_result.iloc[28:])
+
+        # check the change rate
+        ADTGo_changed = (ADTGo_R/ADTSound_R - ADTGo_NR/ADTSound_NR)/(ADTGo_NR/ADTSound_NR)
+        JUVGo_changed = (JUVGo_R/JUVSound_R - JUVGo_NR/JUVSound_NR)/(JUVGo_NR/JUVSound_NR)
+
+        label='-Changed'
+        self.generate_psycho_plot(ADTGo_changed, JUVGo_changed,
+                                  taskInd, probeInd, adtColor, juvColor, label,save_path)
+        cue_anova = []
+        age_anova = []
+        response_anova = []
+
+        tempPsycho_data =np.concatenate((ADTGo_changed,JUVGo_changed),axis=1)
+        for t in range(tempPsycho_data.shape[1]):
+            for cue in range(tempPsycho_data.shape[0]):
+                if ~np.isnan(tempPsycho_data[cue,t]) and ~np.isinf(tempPsycho_data[cue,t]):
+                    if t<len(ADTGo_changed):
+                        age_anova.append('ADT')
+                    else:
+                        age_anova.append('JUV')
+                    cue_anova.append(str(cue+1))
+                    response_anova.append(tempPsycho_data[cue,t])
+
+        anova_data = pd.DataFrame({'age': age_anova,
+                                   'cue': cue_anova,
+                                   'response': response_anova
+                                   })
+        model = ols('response ~ age + cue +age:cue', anova_data).fit()
+        anova_table = sm.stats.anova_lm(model, typ=2)
+        # print ANOVA table
+        print(anova_table)
+        # post-hoc pairwise test
+        pairwise_result = pg.pairwise_ttests(data=anova_data,
+                                             dv = 'response', between = ['cue','age'],
+                                             parametric = False,padjust = 'fdr_bh')
+        print(pairwise_result.iloc[28:])
+    def generate_psycho_plot(self, group1, group2, taskInd, probeInd, g1Color, g2Color, label, save_path):
+        # calculate mean and standard error
+        for idx in range(group1.shape[0]):
+            if idx==0:
+                meanG1 = np.zeros((group1.shape[0]))
+                steG1 = np.zeros((group1.shape[0]))
+            tempdata = group1[idx,:]
+            meanG1[idx] = np.nanmean(tempdata[~np.isinf(tempdata)])
+            steG1[idx] = np.nanstd(tempdata[~np.isinf(tempdata)])/np.sqrt(len(tempdata[~np.isinf(tempdata)]))
+
+        for idx in range(group2.shape[0]):
+            if idx==0:
+                meanG2 = np.zeros((group2.shape[0]))
+                steG2 = np.zeros((group2.shape[0]))
+            tempdata = group2[idx,:]
+            meanG2[idx] = np.nanmean(tempdata[~np.isinf(tempdata)])
+            steG2[idx] = np.nanstd(tempdata[~np.isinf(tempdata)])/np.sqrt(len(tempdata[~np.isinf(tempdata)]))
+
+
+        psycho_plot = StartPlots()
+        psycho_plot.ax.scatter(self.beh_dict['stiFreq'][taskInd],meanG1[taskInd],
+                               marker='.', s = 100, c=g1Color,label='_nolegend_')
+        psycho_plot.ax.errorbar(self.beh_dict['stiFreq'][taskInd],meanG1[taskInd],
+                    yerr=steG1[taskInd], fmt='none', ecolor=g1Color,label='_nolegend_')
+        # psycho_plot.ax.scatter(self.beh_dict['stiFreq'][probeInd], meanG1[probeInd],
+        #                        marker='x', c=g1Color, label='_nolegend_')
+        # psycho_plot.ax.errorbar(self.beh_dict['stiFreq'][probeInd], meanG1[probeInd],
+        #                         yerr=steG1[probeInd], fmt='none', ecolor=g1Color, label='_nolegend_')
+
+        psycho_plot.ax.scatter(self.beh_dict['stiFreq'][taskInd],meanG2[taskInd],
+                               marker='.', s = 100, c=g2Color, label='_nolegend_')
+        psycho_plot.ax.errorbar(self.beh_dict['stiFreq'][taskInd],meanG2[taskInd],
+                    yerr=steG2[taskInd], fmt='none', ecolor=g2Color, label='_nolegend_')
+        # psycho_plot.ax.scatter(self.beh_dict['stiFreq'][probeInd], meanG2[probeInd],
+        #                        marker='x', c=g2Color, label='_nolegend_')
+        # psycho_plot.ax.errorbar(self.beh_dict['stiFreq'][probeInd], meanG2[probeInd],
+        #                         yerr=steG2[probeInd], fmt='none', ecolor=g2Color, label='_nolegend_')
+
+        #psycho_plot.legend(['Adult', 'Juvenile'])
         psycho_plot.ax.set_xlabel('Stimulus frequency')
         psycho_plot.ax.set_ylabel('Response rate')
-        psycho_plot.ax.plot()
 
-        psycho_plot.save_plot('Average psychometric.svg', 'svg', save_path)
-        psycho_plot.save_plot('Average psychometric.tif', 'tif', save_path)
+        psycho_plot.save_plot('Average psychometric '+label+'.svg', 'svg', save_path)
+        psycho_plot.save_plot('Average psychometric'+label+'.tif', 'tif', save_path)
 
     def get_meanste(self, data):
         """
@@ -1908,13 +2317,317 @@ class GoNogoBehaviorSum:
 
         return rate
 
+class BehComparison:
+    # to compare behavior result between early and late learning groups
+    def __init__(self, group1, group2, save_path):
+        # group1 and group2 are instances of GoNogoBehaviorSum
+        self.group1 = group1
+        self.group2 = group2
+        self.save_path = save_path
+
+    def comp_dP(self):
+        # comparison between d-prime, hit rate, and FA rate
+        #
+
+        # d-prime
+        ylim = [0,3]
+        ylabel = 'd-prime'
+        [plot, dP_stats] = self.plot_dP(ylabel,ylim)
+        plot.save_plot('Comparison-'+ylabel+'.tiff','tiff',save_path)
+        plot.save_plot('Comparison-' + ylabel+'.svg', 'svg', save_path)
+        plt.close()
+
+        ylabel = 'd-prime-R'
+        [plot, dP_stats] = self.plot_dP(ylabel,ylim)
+        plot.save_plot('Comparison-'+ylabel+'.tiff','tiff',save_path)
+        plot.save_plot('Comparison-' + ylabel+'.svg', 'svg', save_path)
+        plt.close()
+        #
+        ylabel = 'd-prime-NR'
+        [plot, dP_stats] = self.plot_dP(ylabel,ylim)
+        plot.save_plot('Comparison-'+ylabel+'.tiff','tiff',save_path)
+        plot.save_plot('Comparison-' + ylabel+'.svg', 'svg', save_path)
+        plt.close()
+
+        ylabel = 'd-prime-NR'
+        [plot, dP_stats] = self.plot_dP(ylabel,ylim)
+        plot.save_plot('Comparison-'+ylabel+'.tiff','tiff',save_path)
+        plot.save_plot('Comparison-' + ylabel+'.svg', 'svg', save_path)
+        plt.close()
+
+        # hit and false alarm rate
+        ylim = [0,1]
+        ylabel = 'Hit_rate'
+        [plot, dP_stats] = self.plot_dP(ylabel,ylim)
+        plot.save_plot('Comparison-'+ylabel+'.tiff','tiff',save_path)
+        plot.save_plot('Comparison-' + ylabel+'.svg', 'svg', save_path)
+        plt.close()
+
+        ylabel = 'Hit_rate_R'
+        [plot, dP_stats] = self.plot_dP(ylabel,ylim)
+        plot.save_plot('Comparison-'+ylabel+'.tiff','tiff',save_path)
+        plot.save_plot('Comparison-' + ylabel+'.svg', 'svg', save_path)
+        plt.close()
+
+        ylabel = 'Hit_rate_NR'
+        [plot, dP_stats] = self.plot_dP(ylabel,ylim)
+        plot.save_plot('Comparison-'+ylabel+'.tiff','tiff',save_path)
+        plot.save_plot('Comparison-' + ylabel+'.svg', 'svg', save_path)
+        plt.close()
+
+        # FA
+        ylabel = 'FA_rate'
+        [plot, dP_stats] = self.plot_dP(ylabel,ylim)
+        plot.save_plot('Comparison-'+ylabel+'.tiff','tiff',save_path)
+        plot.save_plot('Comparison-' + ylabel+'.svg', 'svg', save_path)
+        plt.close()
+
+        ylabel = 'FA_rate_R'
+        [plot, dP_stats] = self.plot_dP(ylabel,ylim)
+        plot.save_plot('Comparison-'+ylabel+'.tiff','tiff',save_path)
+        plot.save_plot('Comparison-' + ylabel+'.svg', 'svg', save_path)
+        plt.close()
+
+        ylabel = 'FA_rate_NR'
+        [plot, dP_stats] = self.plot_dP(ylabel,ylim)
+        plot.save_plot('Comparison-'+ylabel+'.tiff','tiff',save_path)
+        plot.save_plot('Comparison-' + ylabel+'.svg', 'svg', save_path)
+        plt.close()
+    def plot_dP(self, ylabel, ylim):
+        # take 4 groups, plot the bar plot
+        # ylabel should be the key of the variables to be plot
+        # run anova analysis and posthoc pairwise comparisons
+        Animal_1 = self.group1.beh_dict['animal']
+        ADTInd_1 = [i for i in range(len(Animal_1)) if 'ADT' in Animal_1[i]]
+        JUVInd_1 = [i for i in range(len(Animal_1)) if 'JUV' in Animal_1[i]]
+
+        Animal_2 = self.group2.beh_dict['animal']
+        ADTInd_2 = [i for i in range(len(Animal_2)) if 'ADT' in Animal_2[i]]
+        JUVInd_2 = [i for i in range(len(Animal_2)) if 'JUV' in Animal_2[i]]
+
+        data = {}
+        data['ADT'] = {
+            'Early':self.group1.beh_dict[ylabel][ADTInd_1],
+            'Late':self.group2.beh_dict[ylabel][ADTInd_2]
+        }
+        data['JUV'] = {
+            'Early':self.group1.beh_dict[ylabel][JUVInd_1],
+            'Late':self.group2.beh_dict[ylabel][JUVInd_2]
+        }
+
+        group_labels = [key for key in data.keys()]
+        categories = [key for key in data[group_labels[0]].keys()]
+
+        values = np.zeros((len(categories),len(group_labels)))
+        errors = np.zeros((len(categories), len(group_labels)))
+        for ii in range(len(group_labels)):
+            for jj in range(len(categories)):
+                values[jj,ii] = np.nanmean(data[group_labels[ii]][categories[jj]])
+                errors[jj,ii] = np.nanstd(data[group_labels[ii]][categories[jj]])/np.sqrt(len(data[group_labels[ii]][categories[jj]]))
+
+        width = 0.35
+        x = np.arange(len(categories))
+        dP_plot = StartPlots()
+        for idx,cat_label in enumerate(categories):
+            dP_plot.ax.bar(x+idx*width, values[idx], width, label = cat_label,
+                           yerr = errors[idx])
+
+        group_positions = (x + (width * len(group_labels)) / 4)
+
+        # Set x-axis tick positions and labels
+        tick_positions = [x + i * width for x in x for i in range(len(categories))]
+        tick_labels = [label for label in (categories * len(x))]
+        dP_plot.ax.legend(title='Learning stage', labels=categories)
+        # Set x-ticks and labels
+        dP_plot.ax.set_xticks(group_positions,group_labels)
+        dP_plot.ax.set_ylabel(ylabel)
+        dP_plot.ax.set_title(ylabel)
+        dP_plot.ax.set_ylim(ylim)
+
+        # anova
+        age_anova = []
+        stage_anova = []
+        response_anova = []
+
+        for t in range(len(group_labels)):
+            for s in range(len(categories)):
+                for v in data[group_labels[t]][categories[s]]:
+                    age_anova.append(group_labels[t])
+                    stage_anova.append(categories[s])
+                    response_anova.append(v)
+
+        anova_data = pd.DataFrame({'age': age_anova,
+                                   'stage': stage_anova,
+                                   'response': response_anova
+                                   })
+        model = ols('response ~ age + stage + age:stage', anova_data).fit()
+        anova_table = sm.stats.anova_lm(model, typ=2)
+        # print ANOVA table
+        print(anova_table)
+        # post-hoc pairwise test
+        pairwise_result = pg.pairwise_ttests(data=anova_data,
+                                             dv = 'response', between = ['age','stage'],
+                                             parametric = False,padjust = 'fdr_bh')
+        print(pairwise_result)
+
+        stats = {}
+        stats['anova'] = anova_table
+        stats['pw-comp'] = pairwise_result
+
+        return dP_plot,stats
+
+    def comp_psycho(self):
+        # compare the psychometric curves
+        # cue 7 only
+        ylabel = 'all_trials'
+        cue = '7'
+        [plot, stats] = self.plot_psycho('all_trials','7',[0,1])
+        plot.save_plot('Comparison-'+ylabel+'-'+cue+'.tiff','tiff',save_path)
+        plot.save_plot('Comparison-' +ylabel+'-'+cue+'.svg', 'svg', save_path)
+        plt.close()
+
+        ylabel = 'R'
+        cue = '7'
+        [plot, stats] = self.plot_psycho(ylabel,cue,[0,1])
+        plot.save_plot('Comparison-'+ylabel+'-'+cue+'.tiff','tiff',save_path)
+        plot.save_plot('Comparison-' +ylabel+'-'+cue+'.svg', 'svg', save_path)
+        plt.close()
+
+        ylabel = 'percent_change'
+        cue = '7'
+        [plot, stats] = self.plot_psycho(ylabel,cue,[0,3])
+        plot.save_plot('Comparison-'+ylabel+'-'+cue+'.tiff','tiff',save_path)
+        plot.save_plot('Comparison-' +ylabel+'-'+cue+'.svg', 'svg', save_path)
+        plt.close()
+    def plot_psycho(self, ylabel, cue, ylim):
+        Animal_1 = self.group1.beh_dict['animal']
+        ADTInd_1 = [i for i in range(len(Animal_1)) if 'ADT' in Animal_1[i]]
+        JUVInd_1 = [i for i in range(len(Animal_1)) if 'JUV' in Animal_1[i]]
+
+        Animal_2 = self.group2.beh_dict['animal']
+        ADTInd_2 = [i for i in range(len(Animal_2)) if 'ADT' in Animal_2[i]]
+        JUVInd_2 = [i for i in range(len(Animal_2)) if 'JUV' in Animal_2[i]]
+
+        if not ylabel == 'percent_change':
+            if ylabel == 'all_trials':
+                Pgo1 = self.group1.beh_dict['psycho_data']['numGo']/self.group1.beh_dict['psycho_data']['numSound']
+                Pgo2 = self.group2.beh_dict['psycho_data']['numGo']/self.group2.beh_dict['psycho_data']['numSound']
+            elif ylabel == 'R':
+                Pgo1 = self.group1.beh_dict['psycho_data']['numGo_R']/self.group1.beh_dict['psycho_data']['numSound_R']
+                Pgo2 = self.group2.beh_dict['psycho_data']['numGo_R']/ self.group2.beh_dict['psycho_data']['numSound_R']
+            elif ylabel == 'NR':
+                Pgo1 = self.group1.beh_dict['psycho_data']['numGo_NR']/self.group1.beh_dict['psycho_data']['numSound_NR']
+                Pgo2 = self.group2.beh_dict['psycho_data']['numGo_NR']/self.group2.beh_dict['psycho_data']['numSound_NR']
+            if cue == '7':
+                cueInd = 13  # for now only plot cue 7
+            data = {}
+            data['ADT'] = {
+                'Early': Pgo1[cueInd,ADTInd_1],
+                'Late': Pgo2[cueInd, ADTInd_2]
+            }
+            data['JUV'] = {
+                'Early': Pgo1[cueInd, JUVInd_1],
+                'Late': Pgo2[cueInd, JUVInd_2]
+            }
+            group_labels = [key for key in data.keys()]
+            categories = [key for key in data[group_labels[0]].keys()]
+
+        elif ylabel == 'percent_change':
+            Pgo_NR_early = self.group1.beh_dict['psycho_data']['numGo_NR']/self.group1.beh_dict['psycho_data']['numSound_NR']
+            Pgo_R_early = self.group1.beh_dict['psycho_data']['numGo_R'] / self.group1.beh_dict['psycho_data']['numSound_R']
+
+            Pgo_NR_late = self.group2.beh_dict['psycho_data']['numGo_NR']/self.group2.beh_dict['psycho_data']['numSound_NR']
+            Pgo_R_late = self.group2.beh_dict['psycho_data']['numGo_R'] / self.group2.beh_dict['psycho_data']['numSound_R']
+
+            if cue == '7':
+                cueInd = 13  # for now only plot cue 7
+            data = {}
+            data['ADT'] = {
+                'Early': (Pgo_R_early[cueInd,ADTInd_1] - Pgo_NR_early[cueInd,ADTInd_1])/Pgo_NR_early[cueInd,ADTInd_1],
+                'Late': (Pgo_R_late[cueInd,ADTInd_2] - Pgo_NR_late[cueInd,ADTInd_2])/Pgo_NR_late[cueInd,ADTInd_2]
+            }
+            data['JUV'] = {
+                'Early': (Pgo_R_early[cueInd,JUVInd_1] - Pgo_NR_early[cueInd,JUVInd_1])/Pgo_NR_early[cueInd,JUVInd_1],
+                'Late': (Pgo_R_late[cueInd,JUVInd_2] - Pgo_NR_late[cueInd,JUVInd_2])/Pgo_NR_late[cueInd,JUVInd_2]
+            }
+
+            group_labels = [key for key in data.keys()]
+            categories = [key for key in data[group_labels[0]].keys()]
+
+            # go through data, change inf to nan
+            for t in range(len(group_labels)):
+                for s in range(len(categories)):
+                    for idx,v in enumerate(data[group_labels[t]][categories[s]]):
+                        if np.isinf(v):
+                            data[group_labels[t]][categories[s]][idx] = np.nan
+
+        values = np.zeros((len(categories),len(group_labels)))
+        errors = np.zeros((len(categories), len(group_labels)))
+        for ii in range(len(group_labels)):
+            for jj in range(len(categories)):
+                values[jj,ii] = np.nanmean(data[group_labels[ii]][categories[jj]])
+                errors[jj,ii] = np.nanstd(data[group_labels[ii]][categories[jj]])/np.sqrt(len(data[group_labels[ii]][categories[jj]]))
+
+        width = 0.35
+        x = np.arange(len(categories))
+        dP_plot = StartPlots()
+        for idx,cat_label in enumerate(categories):
+            dP_plot.ax.bar(x+idx*width, values[idx], width, label = cat_label,
+                           yerr = errors[idx])
+
+        group_positions = (x + (width * len(group_labels)) / 4)
+
+        # Set x-axis tick positions and labels
+        tick_positions = [x + i * width for x in x for i in range(len(categories))]
+        tick_labels = [label for label in (categories * len(x))]
+        dP_plot.ax.legend(title='Learning stage', labels=categories)
+        # Set x-ticks and labels
+        dP_plot.ax.set_xticks(group_positions,group_labels)
+        dP_plot.ax.set_ylabel(ylabel)
+        dP_plot.ax.set_title(ylabel)
+        dP_plot.ax.set_ylim(ylim)
+
+        # anova
+        age_anova = []
+        stage_anova = []
+        response_anova = []
+
+        for t in range(len(group_labels)):
+            for s in range(len(categories)):
+                for v in data[group_labels[t]][categories[s]]:
+                    if ~np.isnan(v) and ~np.isinf(v):
+                        age_anova.append(group_labels[t])
+                        stage_anova.append(categories[s])
+                        response_anova.append(v)
+
+        anova_data = pd.DataFrame({'age': age_anova,
+                                   'stage': stage_anova,
+                                   'response': response_anova
+                                   })
+        model = ols('response ~ age + stage + age:stage', anova_data).fit()
+        anova_table = sm.stats.anova_lm(model, typ=2)
+        # print ANOVA table
+        print(anova_table)
+        # post-hoc pairwise test
+        pairwise_result = pg.pairwise_ttests(data=anova_data,
+                                             dv = 'response', between = ['age','stage'],
+                                             parametric = False, padjust = 'fdr_bh')
+        print(pairwise_result)
+
+        stats = {}
+        stats['anova'] = anova_table
+        stats['pw-comp'] = pairwise_result
+
+        return dP_plot,stats
+
+
 if __name__ == "__main__":
     # test single session
     test_single_session = False
     if test_single_session == True:
         animal = 'JUV015'
         session = '220409'
-        input_path = r'Z:\Madeline\processed_data\JUV022\230127\JUV022_230127_behaviorLOG.mat'
+        input_path = r'Z:\HongliWang\Madeline\project\Analysis\JUV015\220409\JUV015-220409-behaviorLOG.mat'
         x = GoNogoBehaviorMat(animal, session, input_path)
         x.to_df()
     #
@@ -1929,27 +2642,49 @@ if __name__ == "__main__":
         x.lick_rate(plot_path, ifrun)
         x.ITI_distribution(plot_path, ifrun)
         x.running_aligned('onset',plot_path, ifrun)
+        x.logistic_regression(plot_path, ifrun)
     # # test code for plot
     #
         x.save_analysis(output_path,ifrun)
 
     test_summary = True
     if test_summary == True:
-        root_dir = r'Z:\HongliWang\Madeline\project'
+        root_dir = r'Z:\HongliWang\Madeline\LateLearning'
         beh_sum = GoNogoBehaviorSum(root_dir)
-    # matplotlib.use('Agg')
+        matplotlib.use('Agg')
         beh_sum.process_singleSession(ifrun=True)
         beh_sum.read_data()
 
         matplotlib.use('QtAgg')
         savefigpath = os.path.join(root_dir, 'summary', 'behavior')
-        beh_sum.plot_dP(savefigpath)
-        beh_sum.plot_rt([1, 2, 3, 4, 5, 6, 7, 8], savefigpath)
-        beh_sum.plot_rt([1, 8], savefigpath)
-        beh_sum.plot_rt([2, 7], savefigpath)
-        beh_sum.plot_rt([3, 6], savefigpath)
-        beh_sum.plot_rt([4, 5], savefigpath)
-        beh_sum.plot_rt([9,10,11,12,13,14,15,16], savefigpath)
+        #beh_sum.plot_dP_ave(savefigpath)
+        #beh_sum.plot_rt([1, 2, 3, 4, 5, 6, 7, 8], savefigpath)
+        #beh_sum.plot_rt([1, 8], savefigpath)
+        #beh_sum.plot_rt([2, 7], savefigpath)
+        #beh_sum.plot_rt([3, 6], savefigpath)
+        #beh_sum.plot_rt([4, 5], savefigpath)
+        #beh_sum.plot_rt([9,10,11,12,13,14,15,16], savefigpath)
         beh_sum.plot_psycho(savefigpath)
         matplotlib.use('QtAgg')
         x=1
+
+    test_comp = True
+    if test_comp == True:
+        matplotlib.use('Agg')
+        root_dir_early = r'Z:\HongliWang\Madeline\EarlyLearning'
+        beh_sum_early = GoNogoBehaviorSum(root_dir_early)
+        beh_sum_early.process_singleSession(ifrun=True)
+        beh_sum_early.read_data()
+
+        root_dir_late = r'Z:\HongliWang\Madeline\LateLearning'
+        beh_sum_late = GoNogoBehaviorSum(root_dir_late)
+        beh_sum_late.process_singleSession(ifrun=False)
+        beh_sum_late.read_data()
+
+        save_path = r'Z:\HongliWang\Madeline\Early_late_comp\Behavior'
+        if not os.path.exists(save_path):
+            os.makedirs(save_path)
+        matplotlib.use('QtAgg')
+        compObj = BehComparison(beh_sum_early,beh_sum_late,save_path)
+        compObj.comp_dP()
+        compObj.comp_psycho()

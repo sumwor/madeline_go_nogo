@@ -4,7 +4,15 @@ function [dprimes, lickrate, session_info, out] = get_behavior(animal_folder, ou
 sessions= dir(animal_folder);
 
 for day = 1:size(sessions,1)
-    if ~strcmp(sessions(day).name, '.') & ~strcmp(sessions(day).name, '..')
+    if ~strcmp(sessions(day).name, '.') & ~strcmp(sessions(day).name, '..') &  ~strcmp(sessions(day).name, '.DS_Store')
+        % check if probe trials should be omitted (any session before
+        % 22/04/11
+        if exist(fullfile(animal_folder,sessions(day).name, 'noprobe.txt'))
+            beh.ifprobe = false;
+        else
+            beh.ifprobe = true;
+        end
+
         session_files = dir(fullfile(sessions(day).folder, sessions(day).name,'*.mat'));
         day_file = session_files.name;
         session = ['session' num2str(day-2)];
@@ -68,11 +76,14 @@ for day = 1:size(sessions,1)
         end
 
         beh.out = out;
-
+        
+        [~, filename, ~] = fileparts(input_file);
         % save the struct
-        behav_log = fullfile(output_path, [input_file(end-23:end-11), '-behaviorLOG.mat']);
-
-        save(behav_log, '-v7.3', 'beh');
+        behav_log = fullfile(output_path, [filename(1:13), '-behaviorLOG.mat']);
+        
+        %if ~exist(behav_log)
+            save(behav_log, '-v7.3', 'beh');
+        %end
 
     end
 

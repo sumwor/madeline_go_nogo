@@ -318,7 +318,8 @@ if ~isempty(data)
         mkdir(savefigpath)
     end
     
-    filename = [arg(end-23:end-11),'-frames.tiff']; % or 'sine_wave.tif'
+    [~, filename, ~] = fileparts(arg);
+    filename = [filename(1:6),'-frames.tiff']; % or 'sine_wave.tif'
     print(gcf,'-dpng',fullfile(savefigpath,filename)); 
     close()
     
