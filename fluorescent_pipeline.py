@@ -831,13 +831,17 @@ class fluoAnalysis:
             #decode_results[varname]['precision'] = np.zeros(len(regr_time))
             decode_results[varname]['f1_score'] = np.zeros((len(regr_time),nRepeats))
             decode_results[varname]['accuracy'] = np.zeros((len(regr_time), nRepeats))
-            decode_results[varname]['params'] = {}
-            decode_results[varname]['params']['n_estimators'] = np.zeros((len(regr_time),nRepeats))
-            decode_results[varname]['params']['max_depth'] = np.zeros((len(regr_time),nRepeats))
-            decode_results[varname]['params']['min_samples_leaf'] = np.zeros((len(regr_time),nRepeats))
             decode_results[varname]['prediction_accuracy'] = {}
             #decode_results[varname]['prediction_f1_score'] = {}
             decode_results[varname]['prediction_accuracy_ctrl'] = {}
+            if classifier == 'RandomForest':
+                decode_results[varname]['params'] = {}
+                decode_results[varname]['params']['n_estimators'] = np.zeros((len(regr_time),nRepeats))
+                decode_results[varname]['params']['max_depth'] = np.zeros((len(regr_time),nRepeats))
+                decode_results[varname]['params']['min_samples_leaf'] = np.zeros((len(regr_time),nRepeats))
+                decode_results[varname]['importance'] = np.zeros((nCells,len(regr_time),nRepeats))
+                #decode_results[varname]['confidence'] = np.zeros((len(notnan_trials), len(regr_time),
+                 #                                                 nRepeats))
             #decode_results[varname]['prediction_f1_score_ctrl'] = {}
 
             #first_not_nan_trial = np.min(np.where(~np.isnan(decodeSig[0, :, 0])))
@@ -854,8 +858,7 @@ class fluoAnalysis:
 
             for repeat in range(nRepeats):
                 if classifier == 'RandomForest':  # use parallel computing for Random forest
-                    decode_results[varname]['confidence'] = np.zeros((len(notnan_trials),
-                                                                      len(regr_time)))
+
                     n_jobs = -1
 
 
@@ -865,7 +868,7 @@ class fluoAnalysis:
                         decodeSig[:,notnan_trials,idx].transpose(),
                         decodeVar[varname][notnan_trials],notnan_trials,
                         trialMask[notnan_trials],
-                        classifier) for idx in
+                        classifier,rand_seed = repeat,decoding_type='reg') for idx in
                         tqdm(range(len(regr_time))))
 
                 #for tt in range(len(regr_time)):
@@ -875,22 +878,22 @@ class fluoAnalysis:
                     # load results
                         #decode_results[varname]['ctrl_precision'][rr] = tempResults['ctrl_precision']
                         #decode_results[varname]['ctrl_recall'][rr] = tempResults['ctrl_recall']
-                        decode_results[varname]['ctrl_f1_score'][rr] = tempResults['ctrl_f1_score']
-                        decode_results[varname]['ctrl_accuracy'][rr] = tempResults['ctrl_accuracy']
-                        decode_results[varname]['accuracy'][rr] = tempResults['accuracy']
-                        decode_results[varname]['importance'][:,rr] = tempResults['importance']
+                        decode_results[varname]['ctrl_f1_score'][rr,repeat] = tempResults['ctrl_f1_score']
+                        decode_results[varname]['ctrl_accuracy'][rr,repeat] = tempResults['ctrl_accuracy']
+                        decode_results[varname]['accuracy'][rr,repeat] = tempResults['accuracy']
+                        decode_results[varname]['importance'][:,rr,repeat] = tempResults['importance']
                         #decode_results[varname]['recall'][rr] = tempResults['recall']
                         #decode_results[varname]['precision'][rr] = tempResults['precision']
-                        decode_results[varname]['f1_score'][rr] = tempResults['f1_score']
-                        decode_results[varname]['classifier'].append(tempResults['classifier'])
-                        decode_results[varname]['classifier_shuffle'].append(tempResults['classifier_shuffle'])
-                        if rr==0:
-                            decode_results[varname]['test_trials'] = np.zeros((len(tempResults['test_trials']),len(regr_time)))
-                        decode_results[varname]['test_trials'][:,rr] = tempResults['test_trials']
-                        decode_results[varname]['params']['n_estimators'][rr] = tempResults['params']['n_estimators']
-                        decode_results[varname]['params']['max_depth'][rr] = tempResults['params']['max_depth']
-                        decode_results[varname]['params']['min_samples_leaf'][rr] = tempResults['params']['min_samples_leaf']
-                        decode_results[varname]['confidence'][:,rr] = tempResults['confidence']
+                        decode_results[varname]['f1_score'][rr,repeat] = tempResults['f1_score']
+                        decode_results[varname]['classifier'][repeat].append(tempResults['classifier'])
+                        decode_results[varname]['classifier_shuffle'][repeat].append(tempResults['classifier_shuffle'])
+                        if rr==0 and repeat == 0:
+                            decode_results[varname]['test_trials'] = np.zeros((len(tempResults['test_trials']),len(regr_time),nRepeats))
+                        decode_results[varname]['test_trials'][:,rr,repeat] = tempResults['test_trials']
+                        decode_results[varname]['params']['n_estimators'][rr,repeat] = tempResults['params']['n_estimators']
+                        decode_results[varname]['params']['max_depth'][rr,repeat] = tempResults['params']['max_depth']
+                        decode_results[varname]['params']['min_samples_leaf'][rr,repeat] = tempResults['params']['min_samples_leaf']
+                        #decode_results[varname]['confidence'][:,rr,repeat] = tempResults['confidence']
 
                 elif classifier=='SVC':
                     for rr in range(len(regr_time)):
@@ -2329,6 +2332,65 @@ class fluoAnalysis:
             pickle.dump(saveData, pf, protocol=pickle.HIGHEST_PROTOCOL)
             pf.close()
 
+    # def noise_analysis_Valente_2021(self, subTrialMask, save_data_path):
+    #
+    #     # analysis of noise in the intertrial interval
+    #     # reference: Valente, 2021, Nature Neuroscience
+    #
+    #     saveData = {}
+    #
+    #     nTrials = self.dFF_aligned.shape[1]
+    #     nCells = self.dFF_aligned.shape[2]
+    #     maxLength = 0
+    #     for trial in self.t_original.keys():
+    #         if len(self.t_original[trial]) > maxLength:
+    #             maxLength = len(self.t_original[trial])
+    #
+    #     signal = np.full((maxLength, nTrials, nCells), np.nan)
+    #     time = np.full((maxLength, nTrials), np.nan)
+    #     """ calculate the pair-wise and population-wise cross-time correlations
+    #     cross time paire-wise correlation: df/f(c1, t1, TrialType) & df/f(c2,t2,TrialType), lag= t2-t1
+    #     then average cross neuron pairs, time pairs, trialtypes"""
+    #     # arrange original dFF and t into matrix, add nan for missing value
+    #
+    #     # find the maximum length
+    #
+    #     startTime = -0.5
+    #     endTime = 0
+    #     timeMask = np.full((maxLength, nTrials), np.nan)
+    #     for trial in self.dFF_original.keys():
+    #         signal[:len(self.dFF_original[trial]), int(trial), :] = self.dFF_original[trial]
+    #         time[:len(self.dFF_original[trial]), int(trial)] = self.t_original[trial]
+    #         timeMask[:len(self.dFF_original[trial]), int(trial)] = np.logical_and(
+    #             self.t_original[trial] >= startTime,
+    #             self.t_original[trial] < -endTime)
+    #     timeMask[np.isnan(timeMask)] = False
+    #
+    #     # get the max length of precue period data
+    #     maxLength = int(max(np.sum(timeMask, 0)))
+    #
+    #     # merge dFF by trial types
+    #     # calculate the mean and variance by trial type, plot P(Hit) as a function
+    #     # of population variance
+    #
+    #     dFF_byTrial = np.full((maxLength, nCells, nTrials), np.nan)
+    #     mean_byTrial = np.full((nTrials), np.nan)
+    #     var_byTrial = np.full((nTrials), np.nan)
+    #     for trial in range(nTrials):
+    #         tempSig = signal[:, trial, :]
+    #         tempTime = timeMask[:, trial].astype(bool)
+    #         if np.sum(tempTime) > 0:
+    #             dFF_byTrial[:np.sum(tempTime), :, trial] = tempSig[tempTime, :]
+    #             mean_byTrial[trial] = np.nanmean(tempSig[tempTime, :])
+    #             var_byTrial[trial] = np.nanvar(tempSig[tempTime, :])
+    #
+    #     saveData['interp_time'] = interpT
+    #     # save the data
+    #     saveDataPath = os.path.join(save_data_path, 'noiseResults_Valente_2021.pickle')
+    #     with open(saveDataPath, 'wb') as pf:
+    #         pickle.dump(saveData, pf, protocol=pickle.HIGHEST_PROTOCOL)
+    #         pf.close()
+
     def pseudoensemble_analysis(self, decodeSig, decodeVar, trialMask,
                                 subTrialMask, classifier, regr_time, save_data_path):
         """ shuffle the cell-trial contigency for every individual neurons
@@ -3204,6 +3266,7 @@ class fluoSum:
                 if not os.path.exists(saveDataPath):
                     os.makedirs(saveDataPath)
                 saveDataFile = os.path.join(saveDataPath, 'decodingResult.pickle')
+                saveDataFileRF = os.path.join(saveDataPath, 'decodingResultRF.pickle')
 
                 if not os.path.exists(saveDataFile):
                     decodeVar = {}
@@ -3260,7 +3323,53 @@ class fluoSum:
                     analysis.decode_analysis(gn_series, saveDataFile, saveDataPath)
 
                     # removing trials that has too large running speed
-                saveDataFile = os.path.join(saveDataPath, 'decodingResult_running_1.5.pickle')
+
+                if not os.path.exists(saveDataFileRF):
+                    decodeVar = {}
+
+                    decodeVar['stimulus'] = np.array(
+                        [np.nan if np.isnan(x)
+                         else np.int(x)
+                         for x in analysis.beh['sound_num']])
+                    decodeSig = y
+
+                    trialMask = decodeVar['stimulus'] <= 8
+                    # check false alarm trials, and probe trials
+                    subTrialMask = {}
+                    subTrialMask['FA'] = analysis.beh['trialType'] == -1
+                    subTrialMask['probe'] = decodeVar['stimulus'] > 8
+                    subTrialMask['Hit'] = analysis.beh['trialType'] == 2
+                    subTrialMask['CorRej'] = analysis.beh['trialType'] == 0
+                    # stimulus 1-4: 1
+                    # stimulus 5-8: 0
+                    # stimulus 9-12；2
+                    # stimulus 13-16: 3
+                    tempSti = np.zeros(len(decodeVar['stimulus']))
+                    for ss in range(len(decodeVar['stimulus'])):
+                        if decodeVar['stimulus'][ss] <= 4:
+                            tempSti[ss] = 1
+                        elif decodeVar['stimulus'][ss] > 4 and decodeVar['stimulus'][ss] <= 8:
+                            tempSti[ss] = 0
+                        elif decodeVar['stimulus'][ss] > 8 and decodeVar['stimulus'][ss] <= 12:
+                            tempSti[ss] = 1
+                        elif decodeVar['stimulus'][ss] > 12:
+                            tempSti[ss] = 0
+                        # trialType
+                    decodeVar['stimulus'] = tempSti
+
+                    classifier = "RandomForest"
+                    varList = ['stimulus']
+
+                    analysis.decoding(decodeSig, decodeVar, varList,
+                                      trialMask, subTrialMask, classifier,
+                                      regr_time, saveDataFileRF)
+                    #                else:
+                    #                    print('Decoding done!')
+                    # ensemble size analysis
+
+                    analysis.decode_analysis(gn_series, saveDataFile, saveDataPath)
+
+                saveDataFile = os.path.join(saveDataPath, 'decodingResult_running_1.2.pickle')
 
                 if not os.path.exists(saveDataFile):
                     decodeVar = {}
@@ -3300,7 +3409,7 @@ class fluoSum:
 
                     # examine the average running speed
                     ave_running = [np.nanmean(analysis.beh['running_speed'][i]) for i in range(len(trialMask))]
-                    run_threshold = 1.5
+                    run_threshold = 1.2
                     trials_include = np.array(ave_running)<run_threshold
 
                     #combine with trialMask and subtrial Mask
@@ -3459,7 +3568,7 @@ class fluoSum:
         # read coefficient, sig cells, neurons with
         for f in tqdm(range(nFiles)):
             saveDataPath = os.path.join(group_adt.iloc[f]['fluo_analysis_dir'], 'decoding')
-            saveDataFile = os.path.join(saveDataPath, 'decodingResult_running.pickle')
+            saveDataFile = os.path.join(saveDataPath, 'decodingResult_running_1.2.pickle')
             # load the pickle file
             if os.path.exists(saveDataFile):
                 with open(saveDataFile, 'rb') as file:
@@ -3521,7 +3630,7 @@ class fluoSum:
         # read coefficient, sig cells, neurons with
         for f in tqdm(range(nFiles)):
             saveDataPath = os.path.join(group_juv.iloc[f]['fluo_analysis_dir'], 'decoding')
-            saveDataFile = os.path.join(saveDataPath, 'decodingResult_running.pickle')
+            saveDataFile = os.path.join(saveDataPath, 'decodingResult_running_1.2.pickle')
             # load the pickle file
             if os.path.exists(saveDataFile):
                 with open(saveDataFile, 'rb') as file:
@@ -3582,7 +3691,7 @@ class fluoSum:
         if not os.path.exists(savefigpath):
             os.makedirs(savefigpath)
 
-        group_label = 'late_running'
+        group_label = 'late_running-1.2'
         savefigpath = os.path.join(self.root_dir, self.summary_dir, 'fluo')
         self.plot_decoding_summary(decodingSummary_ADT, decodingSummary_JUV, regr_time, savefigpath, group_label)
 
@@ -4004,7 +4113,7 @@ class fluoSum:
                                                                     alpha=0.2, color=adtColor)
 
             decodingPlot.ax[idx].plot(regr_time[plotIdx], tempCtrlBoot['bootAve'][plotIdx],
-                                                        c=(0.7, 0.7, 0.7))
+                                                        alpha=0.5,c=adtColor)
             decodingPlot.ax[idx].fill_between(regr_time[plotIdx], tempCtrlBoot['bootLow'][plotIdx],
                                                                 tempCtrlBoot['bootHigh'][plotIdx],
                                                                 alpha=0.2, color=(0.7, 0.7, 0.7))
@@ -4022,15 +4131,15 @@ class fluoSum:
                                                                 alpha=0.2, color=juvColor)
 
             decodingPlot.ax[idx].plot(regr_time[plotIdx], tempCtrlBoot['bootAve'][plotIdx],
-                                                        c=(0.7, 0.7, 0.7))
+                                                        c=juvColor, alpha = 0.5)
             decodingPlot.ax[idx].fill_between(regr_time[plotIdx], tempCtrlBoot['bootLow'][plotIdx],
                                                                 tempCtrlBoot['bootHigh'][plotIdx],
                                                                 alpha=0.2, color=(0.7, 0.7, 0.7))
             p_list = []
             dt = np.mean(np.diff(regr_time))
             for tt in range(len(regr_time)):
-                statistic, p_MWtest = mannwhitneyu(decodingSummary_JUV[var]['accuracy'][tt, :],
-                                                   decodingSummary_ADT[var]['accuracy'][tt, :])
+                statistic, p_MWtest = wilcoxon(decodingSummary_JUV[var]['accuracy'][tt, :],
+                                                   decodingSummary_JUV[var]['ctrl_accuracy'][tt, :])
                 p_list.append(p_MWtest)
             q_values = multipletests(p_list, method='fdr_bh')[1]
             # Set your desired FDR level (e.g., 0.05)
@@ -4140,6 +4249,7 @@ class fluoSum:
                 subTrialMask['Hit'] = analysis.beh['trialType'] == 2
                 subTrialMask['CorRej'] = analysis.beh['trialType'] == 0
                 analysis.noise_analysis(subTrialMask, saveDataPath)
+                #analysis.noise_analysis_Valente_2021(subTrialMask, saveDataPath)
 
     def noise_summary(self, group_adt, group_juv, group_label):
         # summary analysis for noise-related data
@@ -5104,16 +5214,16 @@ if __name__ == "__main__":
         #fluo_summary.MLR_summary(ADT_late, JUV_late, group_label)
         # multiple linear regression
         n_predictors = 14
-        fluo_summary.decoding_session(n_predictors)
+        #fluo_summary.decoding_session(n_predictors)
 
         # similarly, separate groups into end stage and early stage
-        fluo_summary.decoding_summary_running(ADT_late, JUV_late, group_label)
-        fluo_summary.decoding_summary(ADT_late, JUV_late, group_label)
+        #fluo_summary.decoding_summary_running(ADT_late, JUV_late, group_label)
+        #fluo_summary.decoding_summary(ADT_late, JUV_late, group_label)
 
         #fluo_summary.decoding_hardeasy_session(n_predictors)
         #fluo_summary.decoding_hardeasy_summary(ADT_late, JUV_late, group_label)
         #fluo_summary.dpca_session()
-        #fluo_summary.noise_session()
+        fluo_summary.noise_session()
         #fluo_summary.noise_summary(ADT_late, JUV_late, group_label)
 
         #fluo_summary.pseudo_session()
