@@ -29,8 +29,8 @@ import pickle
 from behavior_base import PSENode, EventNode
 
 # import matlab engine
-import matlab.engine
-eng = matlab.engine.start_matlab()
+#import matlab.engine
+#eng = matlab.engine.start_matlab()
 # From matlab file get_Headfix_GoNo_EventTimes.m:
 # % eventID=1:    2P imaging frame TTL high
 # % eventID=2:    2P imaging frame TTL low
@@ -330,114 +330,114 @@ class GoNogoBehaviorMat(BehaviorMat):
 
         return result_df
 
-    def beh_cut(self, save_path):
-        # obslete
-        # animals stop to engage in the task in some sessions
-        # should only apply in later session???
-        # calculate the running d-prime and detect change point, then delete the
-        # following trials
-
-        # calculate running d-prime in 50 trial blocks
-        nStep = 50
-        nTrials = self.DF.shape[0]
-        runningDprime = np.zeros(nTrials-nStep+1)
-        runningHitRate = np.zeros(nTrials-nStep+1)
-        for idx in range(nTrials-nStep+1):
-            # use loglinear to calculate the d-prime
-            # reference: Macmillan & Kaplan, 1985
-            # adjusted_hitRate = (nHit+ nGo/nSum)/(nGo+1)
-            # adjusted_FARate = (nFA+nNoGo/nSum)/(nNoGo+1)
-
-            nTrialGo = np.sum(np.logical_or(self.DF['trialType'][idx:idx+nStep] == 2,
-                                self.DF['trialType'][idx:idx+nStep] == -2))
-            nTrialNoGo = np.sum(np.logical_or(self.DF['trialType'][idx:idx+nStep] == -1,
-                                self.DF['trialType'][idx:idx+nStep] == 0))
-            Hit_rate = (np.sum(self.DF['trialType'][idx:idx+nStep] == 2)+
-                        nTrialGo/(nTrialGo+nTrialNoGo)) / (nTrialGo+1)
-            FA_rate = (np.sum(self.DF['trialType'][idx:idx+nStep]== -1)+
-                        nTrialNoGo/(nTrialNoGo+nTrialGo))/ (nTrialNoGo+1)
-
-            runningHitRate[idx] = Hit_rate
-            runningDprime[idx] = norm.ppf(Hit_rate) - norm.ppf(FA_rate)
-
-        # change point detection using matlab function ischange
-        try:
-            TF, S1, S2 = eng.ischange(runningHitRate, 'linear', 'MaxNumChanges', 2, nargout=3)
-        except:
-            TF = [[np.nan]]
-            S1 = [[np.nan]]
-            S2 = [[np.nan]]
-
-        if not np.isnan(TF[0][0]):
-            hitThresh = 0.8
-            segline = np.array(S1[0])*(np.arange(len(runningHitRate))) + np.array(S2[0])
-
-            # find the point where runninghitrate is below 0.8
-            xAxis = np.arange(len(runningHitRate))
-            IndAbove = segline[0]<hitThresh
-
-            cross_point = eng.ischange(np.double(IndAbove))[0]
-            TF_hitThresh = [xAxis[i] for i in range(len(xAxis)) if cross_point[i]] # including change points both go below 1 and go above 1
-            TF_belowThresh = []
-            for k in range(len(TF_hitThresh)):
-                if segline[0][TF_hitThresh[k] - 1] > hitThresh:
-                    TF_belowThresh.append(TF_hitThresh[k])
-
-            tfPoint = [xAxis[i] for i in range(len(xAxis)) if TF[0][i]]
-            self.cutoff = 0
-            self.ifCut = False
-            # chech if TF_belowThresh is None
-
-            if TF_belowThresh is not None:
-                for ii in range(len(TF_belowThresh)):
-            # check the point 1 by 1
-                    if TF_belowThresh[ii] > 150: # critierion 1
-            # finding the change point before I(ii)
-                        if TF_belowThresh[ii] in tfPoint: # the point itself is a change point
-                            if segline[0][TF_belowThresh[ii]] < hitThresh: # criterion 2
-                                if np.max(segline[0][TF_belowThresh[ii] + 1:-1]) < segline[0][TF_belowThresh[ii] - 1]: # criterion 3
-                                    self.cutoff = TF_belowThresh[ii]
-                                    self.ifCut = True
-                                    break
-                        else:
-                        # find the last trial when hit rate drop below threshold
-                            tf_all = np.where(tfPoint < TF_belowThresh[ii])[0]
-                            if tf_all.size == 0:
-                                tf = 0
-                            else:
-                                tf = np.where(tfPoint < TF_belowThresh[ii])[0][-1]
-                            tfP = tfPoint[tf]
-                            if np.max(segline[0][TF_belowThresh[ii] + 1: -1]) < np.max([segline[0][tfP - 1], segline[0][tfP]]):
-                    # criterion 3
-                                self.ifCut = True
-                                self.cutoff = TF_belowThresh[ii]
-                                break
-
-        else:
-            self.cutoff = 0
-            self.ifCut = False
-            segline = np.zeros(len(runningHitRate))
-
-
-        # plot the cut result
-        cut_plot = StartPlots()
-        cut_plot.ax.plot(runningDprime)
-        cut_plot.ax.plot(runningHitRate)
-        cut_plot.ax.plot(segline[0])
-        if self.ifCut:
-            cut_plot.ax.scatter(self.cutoff, runningHitRate[self.cutoff], s= 80, c='red')
-        cut_plot.save_plot('Cut point.png', 'png', save_path)
-
-        # save the result
-        if self.ifCut:
-            self.DFFull = self.DF
-            self.DF = self.DF.iloc[0:self.cutoff]
-            self.trialNFull = self.trialN
-            self.trialN = self.cutoff
-
-        self.saveData['ifCut'] = self.ifCut
-        self.saveData['cutoff'] = self.cutoff
-        self.saveData['behDF'] = self.DF
+    # def beh_cut(self, save_path):
+    #     # obslete
+    #     # animals stop to engage in the task in some sessions
+    #     # should only apply in later session???
+    #     # calculate the running d-prime and detect change point, then delete the
+    #     # following trials
+    #
+    #     # calculate running d-prime in 50 trial blocks
+    #     nStep = 50
+    #     nTrials = self.DF.shape[0]
+    #     runningDprime = np.zeros(nTrials-nStep+1)
+    #     runningHitRate = np.zeros(nTrials-nStep+1)
+    #     for idx in range(nTrials-nStep+1):
+    #         # use loglinear to calculate the d-prime
+    #         # reference: Macmillan & Kaplan, 1985
+    #         # adjusted_hitRate = (nHit+ nGo/nSum)/(nGo+1)
+    #         # adjusted_FARate = (nFA+nNoGo/nSum)/(nNoGo+1)
+    #
+    #         nTrialGo = np.sum(np.logical_or(self.DF['trialType'][idx:idx+nStep] == 2,
+    #                             self.DF['trialType'][idx:idx+nStep] == -2))
+    #         nTrialNoGo = np.sum(np.logical_or(self.DF['trialType'][idx:idx+nStep] == -1,
+    #                             self.DF['trialType'][idx:idx+nStep] == 0))
+    #         Hit_rate = (np.sum(self.DF['trialType'][idx:idx+nStep] == 2)+
+    #                     nTrialGo/(nTrialGo+nTrialNoGo)) / (nTrialGo+1)
+    #         FA_rate = (np.sum(self.DF['trialType'][idx:idx+nStep]== -1)+
+    #                     nTrialNoGo/(nTrialNoGo+nTrialGo))/ (nTrialNoGo+1)
+    #
+    #         runningHitRate[idx] = Hit_rate
+    #         runningDprime[idx] = norm.ppf(Hit_rate) - norm.ppf(FA_rate)
+    #
+    #     # change point detection using matlab function ischange
+    #     try:
+    #         TF, S1, S2 = eng.ischange(runningHitRate, 'linear', 'MaxNumChanges', 2, nargout=3)
+    #     except:
+    #         TF = [[np.nan]]
+    #         S1 = [[np.nan]]
+    #         S2 = [[np.nan]]
+    #
+    #     if not np.isnan(TF[0][0]):
+    #         hitThresh = 0.8
+    #         segline = np.array(S1[0])*(np.arange(len(runningHitRate))) + np.array(S2[0])
+    #
+    #         # find the point where runninghitrate is below 0.8
+    #         xAxis = np.arange(len(runningHitRate))
+    #         IndAbove = segline[0]<hitThresh
+    #
+    #         cross_point = eng.ischange(np.double(IndAbove))[0]
+    #         TF_hitThresh = [xAxis[i] for i in range(len(xAxis)) if cross_point[i]] # including change points both go below 1 and go above 1
+    #         TF_belowThresh = []
+    #         for k in range(len(TF_hitThresh)):
+    #             if segline[0][TF_hitThresh[k] - 1] > hitThresh:
+    #                 TF_belowThresh.append(TF_hitThresh[k])
+    #
+    #         tfPoint = [xAxis[i] for i in range(len(xAxis)) if TF[0][i]]
+    #         self.cutoff = 0
+    #         self.ifCut = False
+    #         # chech if TF_belowThresh is None
+    #
+    #         if TF_belowThresh is not None:
+    #             for ii in range(len(TF_belowThresh)):
+    #         # check the point 1 by 1
+    #                 if TF_belowThresh[ii] > 150: # critierion 1
+    #         # finding the change point before I(ii)
+    #                     if TF_belowThresh[ii] in tfPoint: # the point itself is a change point
+    #                         if segline[0][TF_belowThresh[ii]] < hitThresh: # criterion 2
+    #                             if np.max(segline[0][TF_belowThresh[ii] + 1:-1]) < segline[0][TF_belowThresh[ii] - 1]: # criterion 3
+    #                                 self.cutoff = TF_belowThresh[ii]
+    #                                 self.ifCut = True
+    #                                 break
+    #                     else:
+    #                     # find the last trial when hit rate drop below threshold
+    #                         tf_all = np.where(tfPoint < TF_belowThresh[ii])[0]
+    #                         if tf_all.size == 0:
+    #                             tf = 0
+    #                         else:
+    #                             tf = np.where(tfPoint < TF_belowThresh[ii])[0][-1]
+    #                         tfP = tfPoint[tf]
+    #                         if np.max(segline[0][TF_belowThresh[ii] + 1: -1]) < np.max([segline[0][tfP - 1], segline[0][tfP]]):
+    #                 # criterion 3
+    #                             self.ifCut = True
+    #                             self.cutoff = TF_belowThresh[ii]
+    #                             break
+    #
+    #     else:
+    #         self.cutoff = 0
+    #         self.ifCut = False
+    #         segline = np.zeros(len(runningHitRate))
+    #
+    #
+    #     # plot the cut result
+    #     cut_plot = StartPlots()
+    #     cut_plot.ax.plot(runningDprime)
+    #     cut_plot.ax.plot(runningHitRate)
+    #     cut_plot.ax.plot(segline[0])
+    #     if self.ifCut:
+    #         cut_plot.ax.scatter(self.cutoff, runningHitRate[self.cutoff], s= 80, c='red')
+    #     cut_plot.save_plot('Cut point.png', 'png', save_path)
+    #
+    #     # save the result
+    #     if self.ifCut:
+    #         self.DFFull = self.DF
+    #         self.DF = self.DF.iloc[0:self.cutoff]
+    #         self.trialNFull = self.trialN
+    #         self.trialN = self.cutoff
+    #
+    #     self.saveData['ifCut'] = self.ifCut
+    #     self.saveData['cutoff'] = self.cutoff
+    #     self.saveData['behDF'] = self.DF
     def output_df(self, outfile, file_type='csv'):
         """
         saves the output of to_df() as a file of the specified type
