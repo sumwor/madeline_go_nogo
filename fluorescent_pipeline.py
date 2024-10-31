@@ -16,7 +16,9 @@ import numpy as np
 from tqdm import tqdm
 from joblib import Parallel, delayed
 import statsmodels.api as sm
+from statsmodels.formula.api import mixedlm
 from statsmodels.stats.multitest import multipletests
+from scipy.stats import median_abs_deviation
 from pyPlotHW import *
 from utility_HW import bootstrap, count_consecutive
 import matplotlib.pyplot as plt
@@ -35,7 +37,9 @@ import glob
 import seaborn as sns
 
 from scipy.sparse import csr_matrix
-from scipy.stats import wilcoxon, mannwhitneyu,ttest_ind
+from scipy.stats import wilcoxon, mannwhitneyu,ttest_ind, ks_2samp
+from statsmodels.formula.api import ols
+from sklearn.model_selection import GridSearchCV
 from imblearn.over_sampling import SMOTE
 from scipy.ndimage.filters import gaussian_filter1d
 from sklearn.ensemble import RandomForestClassifier as RFC
@@ -450,7 +454,7 @@ class fluoAnalysis:
 
     def process_X(self, regr_time, choiceList, rewardList, nTrials, nCells, trial):
         # re-arrange the behavior and dFF data for linear regression
-        X = np.zeros((14,len(regr_time)))
+        X = np.zeros((11,len(regr_time)))
         #
         Y = np.zeros((nCells, len(regr_time)))
 
@@ -477,15 +481,20 @@ class fluoAnalysis:
         X[5, :] = np.ones(len(regr_time)) * (choiceList[trial - 1] if trial > 0 else np.nan)
 
         # reward
-        X[6, :] = np.ones(len(regr_time)) * (
-            rewardList[trial + 1] if trial < nTrials - 1 else np.nan)
-        X[7, :] = np.ones(len(regr_time)) * rewardList[trial]
-        X[8, :] = np.ones(len(regr_time)) * (rewardList[trial - 1] if trial > 0 else np.nan)
+        # X[6, :] = np.ones(len(regr_time)) * (
+        #     rewardList[trial + 1] if trial < nTrials - 1 else np.nan)
+        # X[7, :] = np.ones(len(regr_time)) * rewardList[trial]
+        # X[8, :] = np.ones(len(regr_time)) * (rewardList[trial - 1] if trial > 0 else np.nan)
 
         # interaction
-        X[9, :] = X[3, :] * X[6, :]
-        X[10, :] = X[4, :] * X[7, :]
-        X[11, :] = X[5, :] * X[8, :]
+        # X[9, :] = X[3, :] * X[6, :]
+        # X[10, :] = X[4, :] * X[7, :]
+        # X[11, :] = X[5, :] * X[8, :]
+        # interaction
+        X[6, :] = X[3, :] * X[0, :]
+        X[7, :] = X[4, :] * X[1, :]
+        X[8, :] = X[5, :] * X[2, :]
+
 
         # running speed and licks
         tStep = np.nanmean(np.diff(regr_time))
@@ -495,10 +504,10 @@ class fluoAnalysis:
             t_start = regr_time[tt] - tStep / 2
             t_end = regr_time[tt] + tStep / 2
             temp_run = self.run_aligned[:, trial]
-            X[12, tt] = np.nanmean(
+            X[9, tt] = np.nanmean(
                 temp_run[np.logical_and(self.interpT > t_start, self.interpT <= t_end)])
 
-            X[13, tt] = np.sum(np.logical_and(licks>=t_start+self.beh['onset'][trial],
+            X[10, tt] = np.sum(np.logical_and(licks>=t_start+self.beh['onset'][trial],
                                               licks<t_end+self.beh['onset'][trial]))
 
             # dependent variable: dFF
@@ -563,25 +572,42 @@ class fluoAnalysis:
         # fit the regression model
         nCells = self.fluo.shape[1] - 2
         n_predictors = X.shape[0]
-        MLRResult = {'coeff': np.zeros((n_predictors, len(regr_time), nCells)), 'pval': np.zeros((n_predictors, len(regr_time), nCells)), 'r2': np.zeros((len(regr_time), nCells))}
+        MLRResult = {'coeff': np.zeros((n_predictors, len(regr_time), nCells)),
+                     'pval': np.zeros((n_predictors, len(regr_time), nCells)),
+                     'r2': np.zeros((len(regr_time), nCells)),
+                     'reduced_r2': np.zeros((len(regr_time), nCells))}
 
         n_jobs = -1
 
         # find the trials without fluorescent data
+        # notnany_where = np.argwhere(~np.isnan(y[0, :, 0]))
+        # nanx_where = np.argwhere(np.isnan(X))
+        # if not len(nanx_where) == 0:
+        #     notnan_trials = np.setdiff1d(np.unique(notnany_where), np.unique(nanx_where))
+        # else:
+        #     notnan_trials = np.unique(notnany_where)
+
         notnany_where = np.argwhere(~np.isnan(y))
         nanx_where = np.argwhere(np.isnan(X))
         if not len(nanx_where)==0:
-            notnan_trials = int(np.setdiff1d(np.unique(notnany_where[:,1]), np.unique(nanx_where[:,1])))
+            notnan_trials = np.setdiff1d(np.unique(notnany_where[:,1]), np.unique(nanx_where[:,1]))
         else:
             notnan_trials = np.unique(notnany_where[:,1])
         # Parallelize the loop over timestep
-        results = Parallel(n_jobs=n_jobs, backend='multiprocessing')(
-            delayed(self.run_MLR)(X[:,notnan_trials,tt],
-                    y[:,notnan_trials,tt]) for tt in
-                    tqdm(range(len(regr_time))))
+        # results = Parallel(n_jobs=n_jobs, backend='multiprocessing')(
+        #     delayed(self.run_MLR)(X[:,notnan_trials,tt],
+        #             y[:,notnan_trials,tt]) for tt in
+        #             tqdm(range(len(regr_time))))
 
-        for tt in range(len(regr_time)):
-            MLRResult['coeff'][:,tt,:], MLRResult['pval'][:,tt,:], MLRResult['r2'][tt,:] = results[tt]
+        # for tt in range(len(regr_time)):
+        #     (MLRResult['coeff'][:,tt,:], MLRResult['pval'][:,tt,:],
+        #      MLRResult['r2'][tt,:], MLRResult['reduced_r2'][tt,:]) = results[tt]
+
+        for tt in tqdm(range(len(regr_time))):
+            results = self.run_MLR(X[:,notnan_trials,tt],y[:,notnan_trials,tt])
+            #(MLRResult['coeff'][:,tt,:], MLRResult['pval'][:,tt,:]) = results[tt]
+            (MLRResult['coeff'][:,tt,:], MLRResult['pval'][:,tt,:],
+             MLRResult['r2'][tt,:], MLRResult['reduced_r2'][tt,:]) = results
 
         MLRResult['regr_time'] = regr_time
 
@@ -590,19 +616,23 @@ class fluoAnalysis:
         sigCells = {}
         sigCells['stimulus'] = []
         sigCells['choice'] = []
-        sigCells['outcome'] = []
+       # sigCells['outcome'] = []
+        sigCells['running'] = []
         pThresh = 0.01
         for cc in range(nCells):
             stiPVal = MLRResult['pval'][1,:,cc]
             choicePVal = MLRResult['pval'][4,:,cc]
-            outcomePVal = MLRResult['pval'][7,:,cc]
+            # outcomePVal = MLRResult['pval'][7,:,cc]
+            runningPVal = MLRResult['pval'][9,:,cc]
             if sum(stiPVal<0.01) >= 10 or count_consecutive(stiPVal<0.01)>=3:
                 sigCells['stimulus'].append(cc)
-            if sum(choicePVal[regr_time>0] < 0.01) >= 10 or count_consecutive(choicePVal[regr_time>0] < 0.01) >= 3:
+            if sum(choicePVal[regr_time>0] < 0.01) >= 5 or count_consecutive(choicePVal[regr_time>0] < 0.01) >= 3:
                 sigCells['choice'].append(cc)
-            if sum(outcomePVal[regr_time>0] < 0.01) >= 10 or count_consecutive(outcomePVal[regr_time>0] < 0.01) >= 3:
-                sigCells['outcome'].append(cc)
-
+            # if sum(outcomePVal[regr_time>0] < 0.01) >= 10 or count_consecutive(outcomePVal[regr_time>0] < 0.01) >= 3:
+            #     sigCells['outcome'].append(cc)
+            if sum(runningPVal[regr_time>0] < 0.01) >= 5 or count_consecutive(runningPVal[regr_time>0] < 0.01) >= 3:
+                sigCells['running'].append(cc)
+        #
         MLRResult['sigCells'] = sigCells
         with open(saveDataFile, 'wb') as pf:
             pickle.dump(MLRResult, pf, protocol=pickle.HIGHEST_PROTOCOL)
@@ -723,7 +753,8 @@ class fluoAnalysis:
         coeff = np.zeros((n_predictors, nCells))
         pval = np.zeros((n_predictors, nCells))
         rSquare = np.zeros((nCells))
-
+        reduced_rSquare = np.zeros((nCells))
+        #running_rSquare = np.zeros((nCells))
         x = sm.add_constant(np.transpose(x))
         for cc in range(nCells):
             model = sm.OLS(y[cc,:], x[:,:]).fit()
@@ -731,7 +762,40 @@ class fluoAnalysis:
             pval[:,cc] = model.pvalues[1:]
             rSquare[cc] = model.rsquared
 
-        return coeff, pval, rSquare
+            reduced_x = np.delete(x, 10, axis=1)
+            reduced_model = sm.OLS(y[cc,:], reduced_x).fit()
+            reduced_rSquare[cc]= reduced_model.rsquared
+
+            #running_model = sm.OLS(y[cc,:], x[:,[0,14]]).fit()
+            #running_rSquare[cc] = running_model.rsquared
+
+        return coeff, pval, rSquare, reduced_rSquare
+
+    def run_MLR_reduced(self, x, y):
+        # running individual MLR for parallel computing
+        # run the full model and with the model without running
+        nCells = y.shape[0]
+        n_predictors = x.shape[0]
+        coeff = np.zeros((n_predictors, nCells))
+        pval = np.zeros((n_predictors, nCells))
+        rSquare = np.zeros((nCells))
+        reduced_rSquare = np.zeros((nCells))
+        #running_rSquare = np.zeros((nCells))
+        x = sm.add_constant(np.transpose(x))
+        for cc in range(nCells):
+            model = sm.OLS(y[cc,:], x[:,:]).fit()
+            coeff[:,cc] = model.params[1:]
+            pval[:,cc] = model.pvalues[1:]
+            rSquare[cc] = model.rsquared
+
+            reduced_x = np.delete(x, 13, axis=1)
+            reduced_model = sm.OLS(y[cc,:], reduced_x).fit()
+            reduced_rSquare[cc]= reduced_model.rsquared
+
+            #running_model = sm.OLS(y[cc,:], x[:,[0,14]]).fit()
+            #running_rSquare[cc] = running_model.rsquared
+
+        return coeff, pval, rSquare, reduced_rSquare
 
     def decoding_old(self, signal, decodeVar, varList, trialMask, classifier, regr_time):
         """
@@ -820,6 +884,10 @@ class fluoAnalysis:
         decode_results = {}
         nCells = decodeSig.shape[0]
         nRepeats = 10 # repeat 10 times to get an average
+        # if os.path.exists(saveDataPath):
+        #     with open(saveDataPath, 'rb') as f:
+        #         decode_results = pickle.load(f)
+#            if not any(decode_results):
 
         for varname in varList:
             print("Decoding " + varname)
@@ -898,7 +966,7 @@ class fluoAnalysis:
                         decode_results[varname]['params']['min_samples_leaf'][rr,repeat] = tempResults['params']['min_samples_leaf']
                         #decode_results[varname]['confidence'][:,rr,repeat] = tempResults['confidence']
 
-                elif classifier=='SVC':
+                elif classifier=='SVC' or classifier == 'RBF':
                     for rr in range(len(regr_time)):
                         result = self.run_decoder(
                                 decodeSig[:, notnan_trials, rr].transpose(),
@@ -978,98 +1046,98 @@ class fluoAnalysis:
                         #decode_results[varname]['prediction_f1_score_ctrl'][key][rr] = result['f1_score_ctrl']
 
 
-        # ensemble analysis
-            if varname == 'stimulus':
-                trial_types = ['Hit',
-                               'FA',
-                               'CorRej',
-                               'Probe']
-                nNeurons = np.arange(10, nCells, 10)
-                cellCounter = np.arange(nCells)
-                nRepeats =20  # repeat 20 times to get an average decoding accuracy
-                decode_ensembleSize = {}
-                decode_ensembleSize['accuracy'] = np.zeros((len(regr_time), len(nNeurons)))
-                decode_ensembleSize['ctrl_accuracy'] = np.zeros((len(regr_time),
-                                                                 len(nNeurons)))
-                decode_ensembleSize['prediction_accuracy'] = {}
-                decode_ensembleSize['prediction_accuracy_ctrl'] = {}
+        # ensemble analysis, for stimulus, action and trialtype
+        #if varname == 'stimulus':
+            trial_types = ['Hit',
+                           'FA',
+                           'CorRej',
+                           'Probe']
+            nNeurons = np.arange(10, nCells+1, 10)
+            cellCounter = np.arange(nCells)
+            nRepeats =20  # repeat 20 times to get an average decoding accuracy
+            decode_ensembleSize = {}
+            decode_ensembleSize['accuracy'] = np.zeros((len(regr_time), len(nNeurons)))
+            decode_ensembleSize['ctrl_accuracy'] = np.zeros((len(regr_time),
+                                                             len(nNeurons)))
+            decode_ensembleSize['prediction_accuracy'] = {}
+            decode_ensembleSize['prediction_accuracy_ctrl'] = {}
+            for key in trial_types:
+                decode_ensembleSize['prediction_accuracy'][key] = np.zeros((len(regr_time), len(nNeurons)))
+                decode_ensembleSize['prediction_accuracy_ctrl'][key] = np.zeros((len(regr_time), len(nNeurons)))
+
+            for idx, nN in tqdm(enumerate(nNeurons)):
+                tempDecode = {}
+                tempDecode['accuracy'] = np.zeros((len(regr_time), nRepeats))
+                tempDecode['ctrl_accuracy'] = np.zeros((len(regr_time), nRepeats))
+                tempDecode['prediction_accuracy'] = {}
+                tempDecode['prediction_accuracy_ctrl'] = {}
+                tempDecode['classifier'] = [[] for nn in range(nRepeats)]
+                tempDecode['classifier_shuffle'] = [[] for nn in range(nRepeats)]
+                for nR in range(nRepeats):
+                    # randomly picking neurons
+                    nPick = np.random.choice(cellCounter, size=nN, replace=False)
+                    for rr in range(len(regr_time)):
+                        temp = decodeSig[nPick, :, rr]
+                        result = self.run_decoder(
+                            temp[:, notnan_trials].transpose(),
+                            decodeVar[varname][notnan_trials], notnan_trials,
+                            trialMask[notnan_trials],
+                            classifier, rand_seed = nR, decoding_type='reg')
+                        tempDecode['ctrl_accuracy'][rr, nR] = result['ctrl_accuracy']
+                        tempDecode['accuracy'][rr, nR] = result['accuracy']
+                        #tempDecode['classifier'][nR].append(result['classifier'])
+                        #tempDecode['classifier_shuffle'][nR].append(result['classifier_shuffle'])
+                        if rr == 0 and nR == 0:
+                            tempDecode['test_trials'] = np.zeros(
+                                (len(result['test_trials']), len(regr_time), nRepeats))
+                        #tempDecode['test_trials'][:, rr, nR] = result['test_trials']
+                    # get the decoding accuracy for different trialtypes
+
+                        for key in trial_types:
+                            if nR == 0:
+                                tempDecode['prediction_accuracy'][key] = np.zeros((len(regr_time),
+                                                                                   nRepeats))
+                                tempDecode['prediction_accuracy_ctrl'][key] = np.zeros((len(regr_time),
+                                                                                        nRepeats))
+                            test_trials_ori = [notnan_trials[int(tt)] for tt in
+                                                result['test_trials']] # test trials in original index
+
+                            if key == 'Hit':
+                                test_trial = [tt for tt in test_trials_ori if self.beh['trialType'][tt] == 2]
+                            elif key == 'FA':
+                                test_trial = [tt for tt in test_trials_ori if self.beh['trialType'][tt] == -1]
+                            elif key == 'CorRej':
+                                test_trial = [tt for tt in test_trials_ori if self.beh['trialType'][tt] == 0]
+                            elif key == 'Probe':
+                                test_trial = [tt for tt in range(len(self.beh['trialType'])) if
+                                          (self.beh['trialType'][tt] == -3 or self.beh['trialType'][tt] == -4)]
+                            testTrialMask = np.array([False for tt in range(len(self.beh['trialType']))])
+                            testTrialMask[test_trial] = True
+                    # don't do parallel
+
+                            result_trial = self.run_decoder_trained_model(result['classifier'],
+                                                                result['classifier_shuffle'],
+                                                                temp[:, notnan_trials].transpose(),
+                                                                decodeVar[varname][notnan_trials],
+                                                                testTrialMask[notnan_trials])
+                            tempDecode['prediction_accuracy'][key][rr, nR] = result_trial['accuracy']
+                        # decode_results[varname]['prediction_f1_score'][key][rr] = result['f1_score']
+                            tempDecode['prediction_accuracy_ctrl'][key][rr, nR] = result_trial[
+                                'accuracy_ctrl']
+
+                decode_ensembleSize['accuracy'][:, idx] = np.nanmean(
+                    tempDecode['accuracy'], 1)
+                decode_ensembleSize['ctrl_accuracy'][:, idx] = np.nanmean(
+                    tempDecode['ctrl_accuracy'], 1)
                 for key in trial_types:
-                    decode_ensembleSize['prediction_accuracy'][key] = np.zeros((len(regr_time), len(nNeurons)))
-                    decode_ensembleSize['prediction_accuracy_ctrl'][key] = np.zeros((len(regr_time), len(nNeurons)))
+                    decode_ensembleSize['prediction_accuracy'][key][:,idx] = np.nanmean(
+                        tempDecode['prediction_accuracy'][key],1)
+                    decode_ensembleSize['prediction_accuracy_ctrl'][key][:,idx] = np.nanmean(
+                        tempDecode['prediction_accuracy_ctrl'][key],1)
 
-                for idx, nN in tqdm(enumerate(nNeurons)):
-                    tempDecode = {}
-                    tempDecode['accuracy'] = np.zeros((len(regr_time), nRepeats))
-                    tempDecode['ctrl_accuracy'] = np.zeros((len(regr_time), nRepeats))
-                    tempDecode['prediction_accuracy'] = {}
-                    tempDecode['prediction_accuracy_ctrl'] = {}
-                    tempDecode['classifier'] = [[] for nn in range(nRepeats)]
-                    tempDecode['classifier_shuffle'] = [[] for nn in range(nRepeats)]
-                    for nR in range(nRepeats):
-                        # randomly picking neurons
-                        nPick = np.random.choice(cellCounter, size=nN, replace=False)
-                        for rr in range(len(regr_time)):
-                            temp = decodeSig[nPick, :, rr]
-                            result = self.run_decoder(
-                                temp[:, notnan_trials].transpose(),
-                                decodeVar[varname][notnan_trials], notnan_trials,
-                                trialMask[notnan_trials],
-                                classifier, rand_seed = nR, decoding_type='reg')
-                            tempDecode['ctrl_accuracy'][rr, nR] = result['ctrl_accuracy']
-                            tempDecode['accuracy'][rr, nR] = result['accuracy']
-                            #tempDecode['classifier'][nR].append(result['classifier'])
-                            #tempDecode['classifier_shuffle'][nR].append(result['classifier_shuffle'])
-                            if rr == 0 and nR == 0:
-                                tempDecode['test_trials'] = np.zeros(
-                                    (len(result['test_trials']), len(regr_time), nRepeats))
-                            #tempDecode['test_trials'][:, rr, nR] = result['test_trials']
-                        # get the decoding accuracy for different trialtypes
-
-                            for key in trial_types:
-                                if nR == 0:
-                                    tempDecode['prediction_accuracy'][key] = np.zeros((len(regr_time),
-                                                                                       nRepeats))
-                                    tempDecode['prediction_accuracy_ctrl'][key] = np.zeros((len(regr_time),
-                                                                                            nRepeats))
-                                test_trials_ori = [notnan_trials[int(tt)] for tt in
-                                                    result['test_trials']] # test trials in original index
-
-                                if key == 'Hit':
-                                    test_trial = [tt for tt in test_trials_ori if self.beh['trialType'][tt] == 2]
-                                elif key == 'FA':
-                                    test_trial = [tt for tt in test_trials_ori if self.beh['trialType'][tt] == -1]
-                                elif key == 'CorRej':
-                                    test_trial = [tt for tt in test_trials_ori if self.beh['trialType'][tt] == 0]
-                                elif key == 'Probe':
-                                    test_trial = [tt for tt in range(len(self.beh['trialType'])) if
-                                              (self.beh['trialType'][tt] == -3 or self.beh['trialType'][tt] == -4)]
-                                testTrialMask = np.array([False for tt in range(len(self.beh['trialType']))])
-                                testTrialMask[test_trial] = True
-                        # don't do parallel
-
-                                result_trial = self.run_decoder_trained_model(result['classifier'],
-                                                                    result['classifier_shuffle'],
-                                                                    temp[:, notnan_trials].transpose(),
-                                                                    decodeVar[varname][notnan_trials],
-                                                                    testTrialMask[notnan_trials])
-                                tempDecode['prediction_accuracy'][key][rr, nR] = result_trial['accuracy']
-                            # decode_results[varname]['prediction_f1_score'][key][rr] = result['f1_score']
-                                tempDecode['prediction_accuracy_ctrl'][key][rr, nR] = result_trial[
-                                    'accuracy_ctrl']
-
-                    decode_ensembleSize['accuracy'][:, idx] = np.nanmean(
-                        tempDecode['accuracy'], 1)
-                    decode_ensembleSize['ctrl_accuracy'][:, idx] = np.nanmean(
-                        tempDecode['ctrl_accuracy'], 1)
-                    for key in trial_types:
-                        decode_ensembleSize['prediction_accuracy'][key][:,idx] = np.nanmean(
-                            tempDecode['prediction_accuracy'][key],1)
-                        decode_ensembleSize['prediction_accuracy_ctrl'][key][:,idx] = np.nanmean(
-                            tempDecode['prediction_accuracy_ctrl'][key],1)
-
-                decode_ensembleSize['nNeurons'] = nNeurons
-                decode_ensembleSize['regr_time'] = regr_time
-                decode_results[varname]['decode_realSize'] = decode_ensembleSize
+            decode_ensembleSize['nNeurons'] = nNeurons
+            decode_ensembleSize['regr_time'] = regr_time
+            decode_results[varname]['decode_realSize'] = decode_ensembleSize
 
 
         # save the decoding results
@@ -1084,6 +1152,122 @@ class fluoAnalysis:
                     decode_results[key][value] = np.nanmean(decode_results[key][value],1)
         decode_results['time'] = regr_time
         decode_results['var'] = varList
+
+        # if nCells >= 80:
+        #     for varname in varList:
+        #         if varname != 'stimulus':  # for another two variable, decode when n=80
+        #             notnany_where = np.argwhere(~np.isnan(decodeSig[0, :, 0]))
+        #             nanx_where = np.argwhere(np.isnan(decodeVar[varname]))
+        #             if not len(nanx_where) == 0:
+        #                 notnan_trials = np.setdiff1d(np.unique(notnany_where), np.unique(nanx_where))
+        #             else:
+        #                 notnan_trials = np.unique(notnany_where)
+        #
+        #             trial_types = ['Hit',
+        #                            'FA',
+        #                            'CorRej',
+        #                            'Probe']
+        #             nNeurons = [80]
+        #             cellCounter = np.arange(nCells)
+        #             nRepeats = 20  # repeat 20 times to get an average decoding accuracy
+        #             decode_ensembleSize = {}
+        #             decode_ensembleSize['accuracy'] = np.zeros((len(regr_time), len(nNeurons)))
+        #             decode_ensembleSize['ctrl_accuracy'] = np.zeros((len(regr_time),
+        #                                                              len(nNeurons)))
+        #             decode_ensembleSize['prediction_accuracy'] = {}
+        #             decode_ensembleSize['prediction_accuracy_ctrl'] = {}
+        #             for key in trial_types:
+        #                 decode_ensembleSize['prediction_accuracy'][key] = np.zeros(
+        #                     (len(regr_time), len(nNeurons)))
+        #                 decode_ensembleSize['prediction_accuracy_ctrl'][key] = np.zeros(
+        #                     (len(regr_time), len(nNeurons)))
+        #
+        #             for idx, nN in tqdm(enumerate(nNeurons)):
+        #                 tempDecode = {}
+        #                 tempDecode['accuracy'] = np.zeros((len(regr_time), nRepeats))
+        #                 tempDecode['ctrl_accuracy'] = np.zeros((len(regr_time), nRepeats))
+        #                 tempDecode['prediction_accuracy'] = {}
+        #                 tempDecode['prediction_accuracy_ctrl'] = {}
+        #                 tempDecode['classifier'] = [[] for nn in range(nRepeats)]
+        #                 tempDecode['classifier_shuffle'] = [[] for nn in range(nRepeats)]
+        #                 for nR in range(nRepeats):
+        #                     # randomly picking neurons
+        #
+        #                     nPick = np.random.choice(cellCounter, size=nN, replace=False)
+        #                     for rr in range(len(regr_time)):
+        #                         temp = decodeSig[nPick, :, rr]
+        #                         result = self.run_decoder(
+        #                             temp[:, notnan_trials].transpose(),
+        #                             decodeVar[varname][notnan_trials], notnan_trials,
+        #                             trialMask[notnan_trials],
+        #                             classifier, rand_seed=nR, decoding_type='reg')
+        #                         tempDecode['ctrl_accuracy'][rr, nR] = result['ctrl_accuracy']
+        #                         tempDecode['accuracy'][rr, nR] = result['accuracy']
+        #                         # tempDecode['classifier'][nR].append(result['classifier'])
+        #                         # tempDecode['classifier_shuffle'][nR].append(result['classifier_shuffle'])
+        #                         if rr == 0 and nR == 0:
+        #                             tempDecode['test_trials'] = np.zeros(
+        #                                 (len(result['test_trials']), len(regr_time), nRepeats))
+        #                         # tempDecode['test_trials'][:, rr, nR] = result['test_trials']
+        #                         # get the decoding accuracy for different trialtypes
+        #
+        #                         for key in trial_types:
+        #                             if nR == 0:
+        #                                 tempDecode['prediction_accuracy'][key] = np.zeros((len(regr_time),
+        #                                                                                    nRepeats))
+        #                                 tempDecode['prediction_accuracy_ctrl'][key] = np.zeros(
+        #                                     (len(regr_time),
+        #                                      nRepeats))
+        #                             test_trials_ori = [notnan_trials[int(tt)] for tt in
+        #                                                result[
+        #                                                    'test_trials']]  # test trials in original index
+        #
+        #                             if key == 'Hit':
+        #                                 test_trial = [tt for tt in test_trials_ori if
+        #                                               self.beh['trialType'][tt] == 2]
+        #                             elif key == 'FA':
+        #                                 test_trial = [tt for tt in test_trials_ori if
+        #                                               self.beh['trialType'][tt] == -1]
+        #                             elif key == 'CorRej':
+        #                                 test_trial = [tt for tt in test_trials_ori if
+        #                                               self.beh['trialType'][tt] == 0]
+        #                             elif key == 'Probe':
+        #                                 test_trial = [tt for tt in range(len(self.beh['trialType'])) if
+        #                                               (self.beh['trialType'][tt] == -3 or
+        #                                                self.beh['trialType'][tt] == -4)]
+        #                             testTrialMask = np.array(
+        #                                 [False for tt in range(len(self.beh['trialType']))])
+        #                             testTrialMask[test_trial] = True
+        #                             # don't do parallel
+        #
+        #                             result_trial = self.run_decoder_trained_model(result['classifier'],
+        #                                                                           result[
+        #                                                                               'classifier_shuffle'],
+        #                                                                           temp[:,
+        #                                                                           notnan_trials].transpose(),
+        #                                                                           decodeVar[varname][
+        #                                                                               notnan_trials],
+        #                                                                           testTrialMask[
+        #                                                                               notnan_trials])
+        #                             tempDecode['prediction_accuracy'][key][rr, nR] = result_trial[
+        #                                 'accuracy']
+        #                             # decode_results[varname]['prediction_f1_score'][key][rr] = result['f1_score']
+        #                             tempDecode['prediction_accuracy_ctrl'][key][rr, nR] = result_trial[
+        #                                 'accuracy_ctrl']
+        #
+        #                 decode_ensembleSize['accuracy'][:, idx] = np.nanmean(
+        #                     tempDecode['accuracy'], 1)
+        #                 decode_ensembleSize['ctrl_accuracy'][:, idx] = np.nanmean(
+        #                     tempDecode['ctrl_accuracy'], 1)
+        #                 for key in trial_types:
+        #                     decode_ensembleSize['prediction_accuracy'][key][:, idx] = np.nanmean(
+        #                         tempDecode['prediction_accuracy'][key], 1)
+        #                     decode_ensembleSize['prediction_accuracy_ctrl'][key][:, idx] = np.nanmean(
+        #                         tempDecode['prediction_accuracy_ctrl'][key], 1)
+        #
+        #             decode_ensembleSize['nNeurons'] = nNeurons
+        #             decode_ensembleSize['regr_time'] = regr_time
+        #             decode_results[varname]['decode_realSize'] = decode_ensembleSize
 
         with open(saveDataPath, 'wb') as pf:
             pickle.dump(decode_results, pf, protocol=pickle.HIGHEST_PROTOCOL)
@@ -1178,21 +1362,99 @@ class fluoAnalysis:
                 for rr in range(len(regr_time)):
                     for key in ['go', 'nogo']:
                         trials = notnan_trials[key]
-                        # check if hard and easy trials both present
-                        if len(np.unique(tempDecode[key][trials]))>=2: # both trials present
-                            result = self.run_decoder(
-                                decodeSig[:, trials , rr].transpose(),
-                                tempDecode[key][trials], trials ,
-                                trialMask[trials ],
-                                classifier, rand_seed=repeat, decoding_type=decoding_type)
-                    # decode_results[varname]['ctrl_precision'][rr] = result['ctrl_precision']
-                    # decode_results[varname]['ctrl_recall'][rr] = result['ctrl_recall']
-                            decode_results[key]['ctrl_accuracy'][rr, repeat] = result['ctrl_accuracy']
-                            decode_results[key]['accuracy'][rr, repeat] = result['accuracy']
+                        # check if hard and easy trials both present and both trials with at least 4 trials
+                        elements = np.unique(tempDecode[key][trials])
+
+                        if len(np.unique(tempDecode[key][trials]))>= 2:
+                            count1 = np.sum(tempDecode[key][trials] == elements[0])
+                            count2 = np.sum(tempDecode[key][trials] == elements[1])
+                            if np.min((count1, count2)) >= 4 : # both trials present
+                                result = self.run_decoder(
+                                    decodeSig[:, trials , rr].transpose(),
+                                    tempDecode[key][trials], trials ,
+                                    trialMask[trials ],
+                                    classifier, rand_seed=repeat, decoding_type=decoding_type)
+                        # decode_results[varname]['ctrl_precision'][rr] = result['ctrl_precision']
+                        # decode_results[varname]['ctrl_recall'][rr] = result['ctrl_recall']
+                                decode_results[key]['ctrl_accuracy'][rr, repeat] = result['ctrl_accuracy']
+                                decode_results[key]['accuracy'][rr, repeat] = result['accuracy']
                         else:
                             decode_results[key]['ctrl_accuracy'][rr, repeat] = np.nan
                             decode_results[key]['accuracy'][rr, repeat] = np.nan
 
+
+        # ensemble analysis
+        nNeurons = np.arange(10, nCells+1, 10)
+        cellCounter = np.arange(nCells)
+        nRepeats = 20  # repeat 20 times to get an average decoding accuracy
+        decode_ensembleSize = {}
+        for key in ['go', 'nogo']:
+            decode_ensembleSize[key] = {}
+            decode_ensembleSize[key]['accuracy'] = np.zeros((len(regr_time), len(nNeurons)))
+            decode_ensembleSize[key]['ctrl_accuracy'] = np.zeros((len(regr_time),
+                                                         len(nNeurons)))
+        # decode_ensembleSize['prediction_accuracy'] = {}
+        # decode_ensembleSize['prediction_accuracy_ctrl'] = {}
+        # for key in trial_types:
+        #     decode_ensembleSize['prediction_accuracy'][key] = np.zeros((len(regr_time), len(nNeurons)))
+        #     decode_ensembleSize['prediction_accuracy_ctrl'][key] = np.zeros((len(regr_time), len(nNeurons)))
+
+        for idx, nN in tqdm(enumerate(nNeurons)):
+            tempResult = {}
+            for key in ['go', 'nogo']:
+                tempResult[key] = {}
+                tempResult[key]['accuracy'] = np.zeros((len(regr_time), nRepeats))
+                tempResult[key]['ctrl_accuracy'] = np.zeros((len(regr_time), nRepeats))
+            # tempDecode['prediction_accuracy'] = {}
+            # tempDecode['prediction_accuracy_ctrl'] = {}
+            # tempDecode['classifier'] = [[] for nn in range(nRepeats)]
+            # tempDecode['classifier_shuffle'] = [[] for nn in range(nRepeats)]
+            for nR in range(nRepeats):
+                # randomly picking neurons
+                nPick = np.random.choice(cellCounter, size=nN, replace=False)
+                for rr in range(len(regr_time)):
+                    for key in ['go', 'nogo']:
+                        trials = notnan_trials[key]
+                        temp = decodeSig[nPick, :, rr]
+                        elements = np.unique(tempDecode[key][trials])
+
+                        if len(np.unique(tempDecode[key][trials]))>= 2:
+                            count1 = np.sum(tempDecode[key][trials] == elements[0])
+                            count2 = np.sum(tempDecode[key][trials] == elements[1])
+                            if np.min((count1, count2)) >= 4:  # probably need at least 4 trials?
+                                result = self.run_decoder(
+                                    temp[:,trials].transpose(),
+                                    tempDecode[key][trials], trials,
+                                    trialMask[trials],
+                                    classifier, rand_seed=nR, decoding_type=decoding_type)
+                                tempResult[key]['ctrl_accuracy'][rr, nR] = result['ctrl_accuracy']
+                                tempResult[key]['accuracy'][rr, nR] = result['accuracy']
+                        else:
+                            tempResult[key]['ctrl_accuracy'][rr, nR] = np.nan
+                            tempResult[key]['accuracy'][rr, nR] = np.nan
+                    # tempDecode['classifier'][nR].append(result['classifier'])
+                    # tempDecode['classifier_shuffle'][nR].append(result['classifier_shuffle'])
+                    # if rr == 0 and nR == 0:
+                    #     tempDecode['test_trials'] = np.zeros(
+                    #         (len(result['test_trials']), len(regr_time), nRepeats))
+                    # tempDecode['test_trials'][:, rr, nR] = result['test_trials']
+                    #get the decoding accuracy for different trialtypes
+
+
+            for key in ['go', 'nogo']:
+                decode_ensembleSize[key]['accuracy'][:, idx] = np.nanmean(
+                    tempResult[key]['accuracy'], 1)
+                decode_ensembleSize[key]['ctrl_accuracy'][:, idx] = np.nanmean(
+                    tempResult[key]['ctrl_accuracy'], 1)
+                # for key in trial_types:
+            #     decode_ensembleSize['prediction_accuracy'][key][:, idx] = np.nanmean(
+            #         tempDecode['prediction_accuracy'][key], 1)
+            #     decode_ensembleSize['prediction_accuracy_ctrl'][key][:, idx] = np.nanmean(
+            #         tempDecode['prediction_accuracy_ctrl'][key], 1)
+
+        decode_results['nNeurons'] = nNeurons
+        #decode_results['regr_time'] = regr_time
+        decode_results['decode_realSize'] = decode_ensembleSize
 
 
         # save the decoding results
@@ -1698,6 +1960,99 @@ class fluoAnalysis:
             class_report = classification_report(y_test, predict_shuffle, output_dict=True)
             f1_score_shuffle = class_report['macro avg']['f1-score']
 
+        elif classifier == 'RBF':
+            model_cv = SVC(kernel='rbf',class_weight='balanced')
+
+            # parameter search
+            param_grid = {
+                'gamma': ['scale'],
+                'C': np.linspace(1, 5, 5)
+            }
+
+            # Setup grid search with cross-validation
+            grid = GridSearchCV(model_cv, param_grid, refit=True, verbose=0, cv=5)
+
+            # Fit the model
+            grid.fit(x, y)
+
+            model = grid.best_estimator_
+            #print("Best Parameters:", grid.best_params_)
+            #print("Best Cross-Validation Score:", grid.best_score_)
+            # best_cv_score = cross_val_score(best_rfc,x,y,cv=10,scoring='roc_auc')
+            # from sklearn.metrics import balanced_accuracy_score
+            # print(balanced_accuracy_score(y_train,best_rfc.predict(X_train)))
+            # calculate decoding accuracy based on confusion matrix
+            model.fit(X_train,y_train)
+            best_predict = model.predict(X_test)
+            pred = confusion_matrix(y_test, best_predict)
+            pred_accuracy = np.trace(pred) / np.sum(pred)
+
+            # feature importance
+            #importance = model.coef_
+            #if pred_var == 'outcome'
+            # precision = pred[1,1]/(pred[1,1]+pred[0,1])
+            # recall = pred[1,1]/(pred[1,1]+pred[1,0])
+            # f1_score = 2*(precision*recall)/(precision+recall)
+            class_report = classification_report(y_test, best_predict, output_dict=True)
+            f1_score = class_report['macro avg']['f1-score']
+            # shuffled control
+
+            xInd = np.arange(len(y_train))
+            X_train_shuffle = np.zeros((X_train.shape))
+            for cc in range(X_train.shape[1]):
+                np.random.shuffle(xInd)
+                X_train_shuffle[:,cc] = X_train[xInd,cc]
+
+            model_shuffle = grid.best_estimator_
+            model_shuffle.fit(X_train_shuffle, y_train)
+            predict_shuffle = model_shuffle.predict(X_test)
+            pred = confusion_matrix(y_test, predict_shuffle)
+            pred_shuffle = np.trace(pred) / np.sum(pred)
+            #precision_shuffle = pred[1, 1] / (pred[1, 1] + pred[0, 1])
+            #recall_shuffle = pred[1, 1] / (pred[1, 1] + pred[1, 0])
+            #f1_score_shuffle = 2 * (precision_shuffle * recall_shuffle) / (precision_shuffle + recall_shuffle)
+            class_report = classification_report(y_test, predict_shuffle, output_dict=True)
+            f1_score_shuffle = class_report['macro avg']['f1-score']
+
+        elif classifier == 'poly':
+            model = SVC(kernel='rbf',class_weight='balanced')
+
+            # best_cv_score = cross_val_score(best_rfc,x,y,cv=10,scoring='roc_auc')
+            # from sklearn.metrics import balanced_accuracy_score
+            # print(balanced_accuracy_score(y_train,best_rfc.predict(X_train)))
+            # calculate decoding accuracy based on confusion matrix
+            model.fit(X_train,y_train)
+            best_predict = model.predict(X_test)
+            pred = confusion_matrix(y_test, best_predict)
+            pred_accuracy = np.trace(pred) / np.sum(pred)
+
+            # feature importance
+            #importance = model.coef_
+            #if pred_var == 'outcome'
+            # precision = pred[1,1]/(pred[1,1]+pred[0,1])
+            # recall = pred[1,1]/(pred[1,1]+pred[1,0])
+            # f1_score = 2*(precision*recall)/(precision+recall)
+            class_report = classification_report(y_test, best_predict, output_dict=True)
+            f1_score = class_report['macro avg']['f1-score']
+            # shuffled control
+
+            xInd = np.arange(len(y_train))
+            X_train_shuffle = np.zeros((X_train.shape))
+            for cc in range(X_train.shape[1]):
+                np.random.shuffle(xInd)
+                X_train_shuffle[:,cc] = X_train[xInd,cc]
+
+            model_shuffle = SVC(kernel='rbf',class_weight='balanced')
+            model_shuffle.fit(X_train_shuffle, y_train)
+            predict_shuffle = model_shuffle.predict(X_test)
+            pred = confusion_matrix(y_test, predict_shuffle)
+            pred_shuffle = np.trace(pred) / np.sum(pred)
+            #precision_shuffle = pred[1, 1] / (pred[1, 1] + pred[0, 1])
+            #recall_shuffle = pred[1, 1] / (pred[1, 1] + pred[1, 0])
+            #f1_score_shuffle = 2 * (precision_shuffle * recall_shuffle) / (precision_shuffle + recall_shuffle)
+            class_report = classification_report(y_test, predict_shuffle, output_dict=True)
+            f1_score_shuffle = class_report['macro avg']['f1-score']
+
         decoder = {}
         decoder['classifier'] = model
         decoder['classifier_shuffle'] = model_shuffle
@@ -1706,7 +2061,7 @@ class fluoAnalysis:
         #decoder['ctrl_recall'] = recall_shuffle
         decoder['ctrl_f1_score'] = f1_score_shuffle
         decoder['accuracy'] = pred_accuracy
-        decoder['importance'] = importance
+        #decoder['importance'] = importance
         #decoder['precision'] = precision
         #decoder['recall'] = recall
         decoder['f1_score'] = f1_score
@@ -2945,7 +3300,7 @@ class fluoAnalysis:
         saveData['decode_pseudo'] = decode_results_pseudo
 
         # examine the effect of ensemble size on decoding accuracy
-        nNeurons = np.arange(10,nCells,10)
+        nNeurons = np.arange(10,nCells+1,10)
         cellCounter = np.arange(nCells)
         nRepeats = 20 # repeat 20 times to get an average decoding accuracy
         decode_ensembleSize = {}
@@ -3487,48 +3842,64 @@ class fluoSum:
 
     def MLR_session(self):
         # run multiple linear regression session by session
-        n_predictors = 14
+        #n_predictors = 14
+        #labels = ['s(n+1)', 's(n)', 's(n-1)', 'c(n+1)', 'c(n)', 'c(n-1)',
+        #          'r(n+1)', 'r(n)', 'r(n-1)', 'x(n+1)', 'x(n)', 'x(n-1)', 'speed', 'lick']
+        n_predictors = 11
         labels = ['s(n+1)', 's(n)', 's(n-1)', 'c(n+1)', 'c(n)', 'c(n-1)',
-                  'r(n+1)', 'r(n)', 'r(n-1)', 'x(n+1)', 'x(n)', 'x(n-1)', 'speed', 'lick']
+                 'x(n+1)', 'x(n)', 'x(n-1)', 'speed', 'lick']
         nFiles = self.data_df.shape[0]
         for f in tqdm(range(nFiles)):
-            analysis = self.data_df['fluo_analysis'][f]
-            gn_series = self.data_df['fluo_raw'][f]
-            saveDataPath = os.path.join(self.data_df.iloc[f]['fluo_analysis_dir'],'MLR')
-            if not os.path.exists(saveDataPath):
-                os.makedirs(saveDataPath)
+            if self.data_df['with_imaging'][f]:
+                analysis = self.data_df['fluo_analysis'][f]
+                gn_series = self.data_df['fluo_raw'][f]
+                saveDataPath = os.path.join(self.data_df.iloc[f]['fluo_analysis_dir'],'MLR')
+                if not os.path.exists(saveDataPath):
+                    os.makedirs(saveDataPath)
 
-            saveTbTFile = os.path.join(saveDataPath, 'trialbytrialVar.pickle')
-            saveMatFile = os.path.join(saveDataPath, 'trialbytrialVar.mat')
-            import scipy.io
+                saveTbTFile = os.path.join(saveDataPath, 'trialbytrialVar_nR.pickle')
+                saveMatFile = os.path.join(saveDataPath, 'trialbytrialVar_nR.mat')
+                import scipy.io
 
-            if not os.path.exists(saveMatFile):
-                X, y, regr_time = analysis.linear_model(n_predictors)
-                tbtVar = {}
-                tbtVar['X'] = X
-                tbtVar['y'] = y
-                tbtVar['regr_time'] = regr_time
+                if not os.path.exists(saveMatFile):
+                    X, y, regr_time = analysis.linear_model(n_predictors)
+                    tbtVar = {}
+                    tbtVar['X'] = X
+                    tbtVar['y'] = y
+                    tbtVar['regr_time'] = regr_time
 
-                scipy.io.savemat(saveMatFile, tbtVar)
-                #
-            # save X and y
+                    scipy.io.savemat(saveMatFile, tbtVar)
+                    #
+                # save X and y
+                    with open(saveTbTFile, 'wb') as pf:
+                        pickle.dump(tbtVar, pf, protocol=pickle.HIGHEST_PROTOCOL)
+                        pf.close()
+                else:
+                    # load the saved results
+                    with open(saveTbTFile, 'rb') as f:
+                        tbtVar = pickle.load(f)
+                        X = tbtVar['X']
+                        y = tbtVar['y']
+                        regr_time = tbtVar['regr_time']
+                # run MLR; omit trials without fluorescent data
+
+                saveDataFile = os.path.join(saveDataPath, 'MLRResult_noR.pickle')
+                #if not os.path.exists(saveDataFile):
+
+                MLRResult = analysis.linear_regr(X[:, 1:-2, :], y[:, 1:-2, :], regr_time, saveDataFile)
+
+                # remove running effect from df/f based on MLR
+                nCells = y.shape[0]
+                y_noRun = np.full((y.shape[0], y.shape[1], y.shape[2]), np.nan)
+                for cc in range(nCells):
+                    y_noRun[cc, :, :] = y[cc, :, :] - X[9, :, :] * MLRResult['coeff'][9, :,cc]
+
+                tbtVar['y_noRun'] = y_noRun
                 with open(saveTbTFile, 'wb') as pf:
                     pickle.dump(tbtVar, pf, protocol=pickle.HIGHEST_PROTOCOL)
                     pf.close()
-            else:
-                # load the saved results
-                with open(saveTbTFile, 'rb') as f:
-                    tbtVar = pickle.load(f)
-                    X = tbtVar['X']
-                    y = tbtVar['y']
-                    regr_time = tbtVar['regr_time']
-            # run MLR; omit trials without fluorescent data
-
-            saveDataFile = os.path.join(saveDataPath, 'MLRResult.pickle')
-            if not os.path.exists(saveDataFile):
-                MLRResult = analysis.linear_regr(X[:, 1:-2, :], y[:, 1:-2, :], regr_time, saveDataFile)
-                analysis.plotMLRResult(MLRResult, labels, gn_series, saveDataPath)
-            else:
+                #analysis.plotMLRResult(MLRResult, labels, gn_series, saveDataPath)
+                #else:
 
                 print('MLR done!')
 
@@ -3540,19 +3911,24 @@ class fluoSum:
         # ['regr_time']  t: time step
         # ['sigCells'] a dictionary of cell ID that are significant for 'stimulus', 'action', 'reward'
 
+        # based on sig neurons, calculate cross correlation between dff and running
         """
         what to do with sigCells?
         """
-        n_predictors = 14
+        #n_predictors = 14
+        #labels = ['s(n+1)', 's(n)', 's(n-1)', 'c(n+1)', 'c(n)', 'c(n-1)',
+        #          'r(n+1)', 'r(n)', 'r(n-1)', 'x(n+1)', 'x(n)', 'x(n-1)', 'speed', 'lick']
+
+        n_predictors = 11
         labels = ['s(n+1)', 's(n)', 's(n-1)', 'c(n+1)', 'c(n)', 'c(n-1)',
-                  'r(n+1)', 'r(n)', 'r(n-1)', 'x(n+1)', 'x(n)', 'x(n-1)', 'speed', 'lick']
+                   'x(n+1)', 'x(n)', 'x(n-1)', 'speed', 'lick']
 
         # load adult group
         nFiles = group_adt.shape[0]
         # read coefficient, sig cells, neurons with
         for f in tqdm(range(nFiles)):
             saveDataPath = os.path.join(group_adt.iloc[f]['fluo_analysis_dir'], 'MLR')
-            saveDataFile = os.path.join(saveDataPath, 'MLRResult.pickle')
+            saveDataFile = os.path.join(saveDataPath, 'MLRResult_noR.pickle')
             # load the pickle file
             with open(saveDataFile, 'rb') as file:
                 MLRResult = pickle.load(file)
@@ -3565,6 +3941,8 @@ class fluoSum:
                                                     0))
                 MLRSummary_ADT['sig'] = np.empty((n_predictors,len(regr_time),
                                                     0))
+                MLRSummary_ADT['running_var'] = np.empty((len(regr_time),0))
+                MLRSummary_ADT['running_var_session'] = np.empty((len(regr_time),0))
             # calculate fraction of neurons that are significant
             pThresh = 0.01
             nCell = MLRResult['coeff'].shape[2]
@@ -3573,13 +3951,18 @@ class fluoSum:
                                                         MLRResult['coeff']), 2)
             MLRSummary_ADT['sig'] = np.concatenate((MLRSummary_ADT['sig'],
                                                         fracSig[:,:,np.newaxis]), 2)
+            aveRunningVar =(MLRResult['r2'] - MLRResult['reduced_r2']) / MLRResult['r2']
+            MLRSummary_ADT['running_var'] = np.concatenate((MLRSummary_ADT['running_var'],
+                                                            aveRunningVar), 1)
+            MLRSummary_ADT['running_var_session']= np.concatenate((MLRSummary_ADT['running_var_session'],
+                                                            np.nanmean(aveRunningVar,1)[:,np.newaxis]), 1)
 
         # load juv group
         nFiles = group_juv.shape[0]
         # read coefficient, sig cells, neurons with
         for f in tqdm(range(nFiles)):
             saveDataPath = os.path.join(group_juv.iloc[f]['fluo_analysis_dir'], 'MLR')
-            saveDataFile = os.path.join(saveDataPath, 'MLRResult.pickle')
+            saveDataFile = os.path.join(saveDataPath, 'MLRResult_noR.pickle')
             # load the pickle file
             with open(saveDataFile, 'rb') as file:
                 MLRResult = pickle.load(file)
@@ -3590,6 +3973,8 @@ class fluoSum:
                                             0))
                 MLRSummary_JUV['sig'] = np.empty((n_predictors, len(regr_time),
                                           0))
+                MLRSummary_JUV['running_var'] = np.empty((len(regr_time), 0))
+                MLRSummary_JUV['running_var_session'] = np.empty((len(regr_time),0))
             pThresh = 0.01
             nCell = MLRResult['coeff'].shape[2]
             fracSig = np.sum(MLRResult['pval'][:, :, :] < pThresh, 2) / nCell
@@ -3597,14 +3982,192 @@ class fluoSum:
                                                   MLRResult['coeff']), 2)
             MLRSummary_JUV['sig'] = np.concatenate((MLRSummary_JUV['sig'],
                                                 fracSig[:, :, np.newaxis]), 2)
-
+            aveRunningVar =(MLRResult['r2'] - MLRResult['reduced_r2']) / MLRResult['r2']
+            MLRSummary_JUV['running_var'] = np.concatenate((MLRSummary_JUV['running_var'],
+                                                            aveRunningVar), 1)
+            MLRSummary_JUV['running_var_session']= np.concatenate((MLRSummary_JUV['running_var_session'],
+                                                            np.nanmean(aveRunningVar,1)[:,np.newaxis]), 1)
             # determine p-value
             # rank-sum test
         # plot the summary results
         savefigpath = os.path.join(self.root_dir, self.summary_dir, 'fluo')
         if not os.path.exists(savefigpath):
             os.makedirs(savefigpath)
+        #print("updated")
+        group_label = 'late no reward'
         self.plot_MLR_summary(MLRSummary_ADT, MLRSummary_JUV, regr_time, labels, savefigpath, group_label)
+
+
+        # calculate the amount of variance explained by running and other predictors
+    # average percentage of variance explained by running - 0-1s and 1-2 second
+        time1 = np.logical_and(regr_time >= 0,regr_time < 1)
+        time2 = regr_time >= 1
+
+        aveRunningADT1 = np.nanmean(MLRSummary_ADT['running_var'][time1,:],0)
+        aveRunningADT2 = np.nanmean(MLRSummary_ADT['running_var'][time2,:],0)
+        aveRunningJUV1 = np.nanmean(MLRSummary_JUV['running_var'][time1,:],0)
+        aveRunningJUV2 = np.nanmean(MLRSummary_JUV['running_var'][time2,:],0)
+    # violin plot
+        data = {
+            'Group': ['ADT'] * len(aveRunningADT1)*2 + ['JUV'] * len(aveRunningJUV1)*2,
+            'Subgroup': ['0-1 s'] * len(aveRunningADT1) + ['1-2 s'] * len(aveRunningADT2) + ['0-1 s'] * len(aveRunningJUV1) + ['1-2 s'] * len(aveRunningJUV2),
+            'Value': np.concatenate((aveRunningADT1,aveRunningADT2,aveRunningJUV1,aveRunningJUV2))
+        }
+        df = pd.DataFrame(data)
+        plt.figure(figsize=(10, 6))
+        sns.violinplot(x='Group', y='Value', hue='Subgroup', data=df, split=True)
+        sns.despine()
+        plt.title("Percentage of variance explained by running")
+        plt.ylabel('Percentage of variance explained by running')
+        # save the sig test
+        # ks-test for significantly different
+        stats1, p1 = mannwhitneyu(aveRunningADT1, aveRunningJUV1)
+        stats2, p2 =  mannwhitneyu(aveRunningADT2, aveRunningJUV2)
+        # print p values:
+        plt.text(0.3, 0.9, "p (1-2s) {:.3g}".format(p2))
+        plt.text(0.3,0.8,"p (0-1s) {:.3g}".format(p1))
+        plt.text(0.3, 0.7, "MW test")
+        plt.ylim([-0.2,1])
+        # save the data
+
+        plt.savefig(os.path.join(savefigpath, 'varianceExplainedRunning.png'))
+        plt.savefig(os.path.join(savefigpath, 'varianceExplainedRunning.svg'))
+        #plt.show()
+
+        # averaged within session first
+        aveRunningSesADT1 = np.nanmean(MLRSummary_ADT['running_var_session'][time1,:],0)
+        aveRunningSesADT2 = np.nanmean(MLRSummary_ADT['running_var_session'][time2,:],0)
+        aveRunningSesJUV1 = np.nanmean(MLRSummary_JUV['running_var_session'][time1,:],0)
+        aveRunningSesJUV2 = np.nanmean(MLRSummary_JUV['running_var_session'][time2,:],0)
+
+        data = {
+            'Group': ['ADT'] * len(aveRunningSesADT1)*2 + ['JUV'] * len(aveRunningSesJUV1)*2,
+            'Subgroup': ['0-1 s'] * len(aveRunningSesADT1) + ['1-2 s'] * len(aveRunningSesADT2) + ['0-1 s'] * len(aveRunningSesJUV1) + ['1-2 s'] * len(aveRunningSesJUV2),
+            'Value': np.concatenate((aveRunningSesADT1,aveRunningSesADT2,aveRunningSesJUV1,aveRunningSesJUV2))
+        }
+        df = pd.DataFrame(data)
+        plt.figure(figsize=(10, 6))
+        sns.violinplot(x='Group', y='Value', hue='Subgroup', data=df, split=True)
+        sns.despine()
+        plt.title("Percentage of variance explained by running")
+        plt.ylabel('Percentage of variance explained by running')
+        # save the sig test
+        # ks-test for significantly different
+        stats1, p1 = mannwhitneyu(aveRunningSesADT1, aveRunningSesJUV1)
+        stats2, p2 =  mannwhitneyu(aveRunningSesADT2, aveRunningSesJUV2)
+        # print p values:
+        plt.text(0.3, 0.9, "p (1-2s) {:.3g}".format(p2))
+        plt.text(0.3,0.8,"p (0-1s) {:.3g}".format(p1))
+        plt.text(0.3, 0.7, "MW test")
+        plt.ylim([-0.2,1])
+        # save the data
+        savedata = {'aveRunningSesADT1': aveRunningSesADT1,
+                    'aveRunningSesADT2': aveRunningSesADT2,
+                    'aveRunningSesJUV1': aveRunningSesJUV1,
+                    'aveRunningSesJUV2': aveRunningSesJUV2}
+        with open(os.path.join(savefigpath, 'RunningVariance_session.pickle'), 'wb') as handle:
+            pickle.dump(savedata, handle, protocol=pickle.HIGHEST_PROTOCOL)
+
+        plt.savefig(os.path.join(savefigpath, 'varianceExplainedRunning_session.png'))
+        plt.savefig(os.path.join(savefigpath, 'varianceExplainedRunning_session.svg'))
+
+    def dff_running_summary(self, group_adt, group_juv, group_label):
+        # cross correlation between running and dff of the neurons that are sig for running (from MLR)
+        nFiles = group_adt.shape[0]
+        # read coefficient, sig cells, neurons with
+        runningLag_ADT = []
+        for f in tqdm(range(nFiles)):
+            saveDataPath = os.path.join(group_adt.iloc[f]['fluo_analysis_dir'], 'MLR')
+            saveDataFile = os.path.join(saveDataPath, 'MLRResult.pickle')
+            # load the pickle file
+            with open(saveDataFile, 'rb') as file:
+                MLRResult = pickle.load(file)
+
+            runningCells = MLRResult['sigCells']['running']
+
+            dffFile = glob.glob(os.path.join(group_adt.iloc[f]['fluo_analysis_dir'], '*dff_df_file.csv'))
+            runningFile = os.path.join(group_adt.iloc[f]['beh_analysis_dir'], 'running_speed.csv')
+
+            fluo = pd.read_csv(dffFile[0])
+            running = pd.read_csv(runningFile)
+            # load the files
+            # interpolate running
+            interpT = np.arange(0, np.min([np.max(fluo['time']), np.max(running['time'])]), 0.05)
+            interpRunning = np.interp(interpT, running['time'], running['speed'])
+            lags = np.arange(-len(interpRunning) + 1, len(interpRunning)) * 0.05
+            xcorrMat = np.zeros((len(lags), len(runningCells)))
+            maxLag = np.zeros((len(runningCells)))
+
+            # focus on -2 to 2 seconds
+            lagTime = np.logical_and(lags>=-1, lags<=1)
+            focus = lags[lagTime]
+            savefigpath = os.path.join(group_adt.iloc[f]['fluo_analysis_dir'], 'RunningCorr')
+            if not os.path.exists(savefigpath):
+                os.makedirs(savefigpath)
+            for idx,cell in enumerate(runningCells):
+                key = 'neuron' + str(cell)
+                interpdFF = np.interp(interpT, fluo['time'], fluo[key])
+
+                # cross correlation
+                xcorrMat[:,idx] = np.correlate(interpdFF, interpRunning, mode='full')/(np.std(interpRunning) * np.std(interpdFF) * len(interpT))
+                # Create an array of lags
+                maxLag[idx] = focus[np.argmax(np.abs(xcorrMat[lagTime,idx]))]
+
+                plt.plot(lags[np.logical_and(lags>=-10, lags<=10)], xcorrMat[np.logical_and(lags>=-10, lags<=10),idx])
+                plt.savefig(os.path.join(savefigpath, 'runningCorr' + key + '.png'))
+                plt.close()
+            runningLag_ADT = runningLag_ADT+list(maxLag)
+                # make some plots
+
+        runningLag_JUV = []
+        nFiles = group_juv.shape[0]
+        for f in tqdm(range(nFiles)):
+            saveDataPath = os.path.join(group_juv.iloc[f]['fluo_analysis_dir'], 'MLR')
+            saveDataFile = os.path.join(saveDataPath, 'MLRResult.pickle')
+            # load the pickle file
+            with open(saveDataFile, 'rb') as file:
+                MLRResult = pickle.load(file)
+
+            nCells = MLRResult['r2'].shape[1]
+            runningCells = MLRResult['sigCells']['running']
+
+            dffFile = glob.glob(os.path.join(group_juv.iloc[f]['fluo_analysis_dir'], '*dff_df_file.csv'))
+            runningFile = os.path.join(group_juv.iloc[f]['beh_analysis_dir'], 'running_speed.csv')
+
+            fluo = pd.read_csv(dffFile[0])
+            running = pd.read_csv(runningFile)
+            # load the files
+            # interpolate running
+            interpT = np.arange(0, np.min([np.max(fluo['time']), np.max(running['time'])]), 0.05)
+            interpRunning = np.interp(interpT, running['time'], running['speed'])
+            lags = np.arange(-len(interpRunning) + 1, len(interpRunning)) * 0.05
+            #xcorrMat = np.zeros((len(lags), len(runningCells)))
+            xcorrMat = np.zeros((len(lags), nCells))
+            #maxLag = np.zeros((len(runningCells)))
+            maxLag = np.zeros((nCells))
+
+            # focus on -2 to 2 seconds
+            lagTime = np.logical_and(lags>=-1, lags<=1)
+            focus = lags[lagTime]
+            savefigpath = os.path.join(group_juv.iloc[f]['fluo_analysis_dir'], 'RunningCorr')
+            if not os.path.exists(savefigpath):
+                os.makedirs(savefigpath)
+            #for idx,cell in enumerate(runningCells):
+            for cc in range(nCells):
+                cell = cc
+                idx= cc
+                key = 'neuron' + str(cell)
+                interpdFF = np.interp(interpT, fluo['time'], fluo[key])
+
+                # cross correlation
+                xcorrMat[:,idx] = np.correlate(interpdFF, interpRunning, mode='full')/(np.std(interpRunning) * np.std(interpdFF) * len(interpT))
+                # Create an array of lags
+                maxLag[idx] = focus[np.argmax(np.abs(xcorrMat[lagTime,idx]))]
+
+                plt.plot(lags[np.logical_and(lags>=-10, lags<=10)], xcorrMat[np.logical_and(lags>=-10, lags<=10),idx])
+                plt.savefig(os.path.join(savefigpath, 'runningCorr' + key + '.png'))
+                plt.close()
+            runningLag_JUV = runningLag_JUV + list(maxLag)
 
     def plot_MLR_summary(self, MLR_ADT, MLR_JUV, regr_time, labels, saveFigPath, group_label):
         # get the average coefficient plot and fraction of significant neurons
@@ -3623,42 +4186,42 @@ class fluoSum:
 
         maxY = 0
         minY = 0
-        for n in range(nPredictors-2):
-            ## plot ADT animals
-            tempBoot = bootstrap(MLR_ADT['coeff'][n, :, :], 1, 1000)
-            tempMax = max(tempBoot['bootHigh'])
-            tempMin = min(tempBoot['bootLow'])
-            if tempMax > maxY:
-                maxY = tempMax
-            if tempMin < minY:
-                minY = tempMin
-
-            plotIdx = np.logical_and(regr_time>-2,regr_time<2)
-            coeffPlot.ax[n // 4, n % 4].plot(regr_time[plotIdx], tempBoot['bootAve'][plotIdx], c=adtColor)
-            coeffPlot.ax[n // 4, n % 4].fill_between(regr_time[plotIdx], tempBoot['bootLow'][plotIdx],
-                                                         tempBoot['bootHigh'][plotIdx],
-                                                         alpha=0.2, color=adtColor)
-
-            tempBoot = bootstrap(MLR_JUV['coeff'][n, :, :], 1, 1000)
-            tempMax = max(tempBoot['bootHigh'])
-            tempMin = min(tempBoot['bootLow'])
-            if tempMax > maxY:
-                maxY = tempMax
-            if tempMin < minY:
-                minY = tempMin
-            coeffPlot.ax[n // 4, n % 4].plot(regr_time[plotIdx], tempBoot['bootAve'][plotIdx], c=juvColor)
-            coeffPlot.ax[n // 4, n % 4].fill_between(regr_time[plotIdx], tempBoot['bootLow'][plotIdx],
-                                                         tempBoot['bootHigh'][plotIdx],
-                                                         alpha=0.2, color=juvColor)
-
-            coeffPlot.ax[n // 4, n % 4].set_title(varList[n])
-
-            # test significance
-        coeffPlot.fig.suptitle('Average coefficient group '+ group_label)
-        plt.ylim((minY, maxY))
-        plt.show()
-        coeffPlot.save_plot('Average coefficient group ' + group_label + '.tif', 'tiff', saveFigPath)
-        coeffPlot.save_plot('Average coefficient group ' + group_label + '.svg', 'svg', saveFigPath)
+        # for n in range(nPredictors-2):
+        #     ## plot ADT animals
+        #     tempBoot = bootstrap(MLR_ADT['coeff'][n, :, :], 1, 1000)
+        #     tempMax = max(tempBoot['bootHigh'])
+        #     tempMin = min(tempBoot['bootLow'])
+        #     if tempMax > maxY:
+        #         maxY = tempMax
+        #     if tempMin < minY:
+        #         minY = tempMin
+        #
+        #     plotIdx = np.logical_and(regr_time>-2,regr_time<2)
+        #     coeffPlot.ax[n // 4, n % 4].plot(regr_time[plotIdx], tempBoot['bootAve'][plotIdx], c=adtColor)
+        #     coeffPlot.ax[n // 4, n % 4].fill_between(regr_time[plotIdx], tempBoot['bootLow'][plotIdx],
+        #                                                  tempBoot['bootHigh'][plotIdx],
+        #                                                  alpha=0.2, color=adtColor)
+        #
+        #     tempBoot = bootstrap(MLR_JUV['coeff'][n, :, :], 1, 1000)
+        #     tempMax = max(tempBoot['bootHigh'])
+        #     tempMin = min(tempBoot['bootLow'])
+        #     if tempMax > maxY:
+        #         maxY = tempMax
+        #     if tempMin < minY:
+        #         minY = tempMin
+        #     coeffPlot.ax[n // 4, n % 4].plot(regr_time[plotIdx], tempBoot['bootAve'][plotIdx], c=juvColor)
+        #     coeffPlot.ax[n // 4, n % 4].fill_between(regr_time[plotIdx], tempBoot['bootLow'][plotIdx],
+        #                                                  tempBoot['bootHigh'][plotIdx],
+        #                                                  alpha=0.2, color=juvColor)
+        #
+        #     coeffPlot.ax[n // 4, n % 4].set_title(varList[n])
+        #
+        #     # test significance
+        # coeffPlot.fig.suptitle('Average coefficient group '+ group_label)
+        # plt.ylim((minY, maxY))
+        # plt.show()
+        # coeffPlot.save_plot('Average coefficient group ' + group_label + '.tif', 'tiff', saveFigPath)
+        # coeffPlot.save_plot('Average coefficient group ' + group_label + '.svg', 'svg', saveFigPath)
 
         # fraction of significant neurons
         sigPlot = StartSubplots(3, 4, ifSharey=True)
@@ -3669,18 +4232,18 @@ class fluoSum:
 
             tempBoot = bootstrap(MLR_ADT['sig'][n, :, :], 1, 1000)
 
-            sigPlot.ax[n // 4, n % 4].plot(regr_time[plotIdx], tempBoot['bootAve'][plotIdx],
+            sigPlot.ax[n // 4, n % 4].plot(regr_time, tempBoot['bootAve'],
                                            c=adtColor)
-            sigPlot.ax[n // 4, n % 4].fill_between(regr_time[plotIdx], tempBoot['bootLow'][plotIdx],
-                                                         tempBoot['bootHigh'][plotIdx],
+            sigPlot.ax[n // 4, n % 4].fill_between(regr_time, tempBoot['bootLow'],
+                                                         tempBoot['bootHigh'],
                                                          alpha=0.2, color=adtColor)
 
             tempBoot = bootstrap(MLR_JUV['sig'][n, :, :], 1, 1000)
 
-            sigPlot.ax[n // 4, n % 4].plot(regr_time[plotIdx], tempBoot['bootAve'][plotIdx],
+            sigPlot.ax[n // 4, n % 4].plot(regr_time, tempBoot['bootAve'],
                                            c=juvColor)
-            sigPlot.ax[n // 4, n % 4].fill_between(regr_time[plotIdx], tempBoot['bootLow'][plotIdx],
-                                                   tempBoot['bootHigh'][plotIdx],
+            sigPlot.ax[n // 4, n % 4].fill_between(regr_time, tempBoot['bootLow'],
+                                                   tempBoot['bootHigh'],
                                                    alpha=0.2, color=juvColor)
 
             sigPlot.ax[n // 4, n % 4].set_title(varList[n])
@@ -3704,18 +4267,19 @@ class fluoSum:
         sigPlot.save_plot('Fraction of significant neurons group ' + group_label + '.tif', 'tiff', saveFigPath)
         sigPlot.save_plot('Fraction of significant neurons group ' + group_label + '.svg', 'svg', saveFigPath)
 
-    def decoding_session(self, n_predictors):
+    def decoding_session(self, n_predictors, classifier, spec):
         nFiles = self.data_df.shape[0]
         for f in tqdm(range(nFiles)):
             if self.data_df['with_imaging'][f]:
                 analysis = self.data_df['fluo_analysis'][f]
+                print(analysis)
                 gn_series = self.data_df['fluo_raw'][f]
                 saveDataPath = os.path.join(self.data_df.iloc[f]['fluo_analysis_dir'],
                                         'MLR')
                 if not os.path.exists(saveDataPath):
                     os.makedirs(saveDataPath)
 
-                saveTbTFile = os.path.join(saveDataPath, 'trialbytrialVar.pickle')
+                saveTbTFile = os.path.join(saveDataPath, 'trialbytrialVar_nR.pickle')
                 if not os.path.exists(saveTbTFile):
                     X, y, regr_time = analysis.linear_model(n_predictors)
                     tbtVar = {}
@@ -3733,14 +4297,15 @@ class fluoSum:
                         tbtVar = pickle.load(pf)
                         X = tbtVar['X']
                         y = tbtVar['y']
+                        y_noRun = tbtVar['y_noRun']
                         regr_time = tbtVar['regr_time']
             # run decoding; omit trials without fluorescent data
                 saveDataPath = os.path.join(self.data_df.iloc[f]['fluo_analysis_dir'],
                                         'decoding')
                 if not os.path.exists(saveDataPath):
                     os.makedirs(saveDataPath)
-                saveDataFile = os.path.join(saveDataPath, 'decodingResult.pickle')
-                saveDataFileRF = os.path.join(saveDataPath, 'decodingResultRF.pickle')
+                saveDataFile = os.path.join(saveDataPath, 'decodingResult_'+spec +classifier+ '.pickle')
+                #saveDataFileRF = os.path.join(saveDataPath, 'decodingResultRF.pickle')
 
                 if not os.path.exists(saveDataFile):
                     decodeVar = {}
@@ -3757,7 +4322,10 @@ class fluoSum:
                             [np.nan if np.isnan(x)
                             else np.int(x)
                             for x in analysis.beh['trialType']])
-                    decodeSig = y
+                    if spec=='noRun_':
+                        decodeSig = y_noRun
+                    else:
+                        decodeSug = y
 
                     trialMask = decodeVar['stimulus'] <=8
                     # check false alarm trials, and probe trials
@@ -3784,132 +4352,28 @@ class fluoSum:
                     decodeVar['stimulus'] = tempSti
                     decodeVar['trialType'][decodeVar['trialType']==2] = 1
 
-                    classifier = "SVC"
+                    #classifier = "SVC"
                     varList = ['stimulus', 'action', 'trialType']
 
                     analysis.decoding(decodeSig, decodeVar, varList,
                                       trialMask,subTrialMask, classifier,
                                       regr_time, saveDataFile)
-    #                else:
-    #                    print('Decoding done!')
-                    # ensemble size analysis
 
-                    analysis.decode_analysis(gn_series, saveDataFile, saveDataPath)
 
-                    # removing trials that has too large running speed
-
-                if not os.path.exists(saveDataFileRF):
-                    decodeVar = {}
-
-                    decodeVar['stimulus'] = np.array(
-                        [np.nan if np.isnan(x)
-                         else np.int(x)
-                         for x in analysis.beh['sound_num']])
-                    decodeSig = y
-
-                    trialMask = decodeVar['stimulus'] <= 8
-                    # check false alarm trials, and probe trials
-                    subTrialMask = {}
-                    subTrialMask['FA'] = analysis.beh['trialType'] == -1
-                    subTrialMask['probe'] = decodeVar['stimulus'] > 8
-                    subTrialMask['Hit'] = analysis.beh['trialType'] == 2
-                    subTrialMask['CorRej'] = analysis.beh['trialType'] == 0
-                    # stimulus 1-4: 1
-                    # stimulus 5-8: 0
-                    # stimulus 9-12；2
-                    # stimulus 13-16: 3
-                    tempSti = np.zeros(len(decodeVar['stimulus']))
-                    for ss in range(len(decodeVar['stimulus'])):
-                        if decodeVar['stimulus'][ss] <= 4:
-                            tempSti[ss] = 1
-                        elif decodeVar['stimulus'][ss] > 4 and decodeVar['stimulus'][ss] <= 8:
-                            tempSti[ss] = 0
-                        elif decodeVar['stimulus'][ss] > 8 and decodeVar['stimulus'][ss] <= 12:
-                            tempSti[ss] = 1
-                        elif decodeVar['stimulus'][ss] > 12:
-                            tempSti[ss] = 0
-                        # trialType
-                    decodeVar['stimulus'] = tempSti
-
-                    classifier = "RandomForest"
-                    varList = ['stimulus']
-
-                    analysis.decoding(decodeSig, decodeVar, varList,
-                                      trialMask, subTrialMask, classifier,
-                                      regr_time, saveDataFileRF)
-                    #                else:
-                    #                    print('Decoding done!')
-                    # ensemble size analysis
-
-                    analysis.decode_analysis(gn_series, saveDataFile, saveDataPath)
-
-                saveDataFile = os.path.join(saveDataPath, 'decodingResult_running_1.2.pickle')
-
-                if not os.path.exists(saveDataFile):
-                    decodeVar = {}
-
-                    decodeVar['stimulus'] = np.array(
-                            [np.nan if np.isnan(x)
-                             else np.int(x)
-                             for x in analysis.beh['sound_num']])
-                    decodeSig = y
-
-                    trialMask = decodeVar['stimulus'] <= 8
-                        # check false alarm trials, and probe trials
-                    subTrialMask = {}
-                    subTrialMask['FA'] = analysis.beh['trialType'] == -1
-                    subTrialMask['probe'] = decodeVar['stimulus'] > 8
-                    subTrialMask['Hit'] = analysis.beh['trialType'] == 2
-                    subTrialMask['CorRej'] = analysis.beh['trialType'] == 0
-                        # stimulus 1-4: 1
-                        # stimulus 5-8: 0
-                        # stimulus 9-12；2
-                        # stimulus 13-16: 3
-                    tempSti = np.zeros(len(decodeVar['stimulus']))
-                    for ss in range(len(decodeVar['stimulus'])):
-                        if decodeVar['stimulus'][ss] <= 4:
-                            tempSti[ss] = 1
-                        elif decodeVar['stimulus'][ss] > 4 and decodeVar['stimulus'][ss] <= 8:
-                            tempSti[ss] = 0
-                        elif decodeVar['stimulus'][ss] > 8 and decodeVar['stimulus'][ss] <= 12:
-                            tempSti[ss] = 1
-                        elif decodeVar['stimulus'][ss] > 12:
-                            tempSti[ss] = 0
-                            # trialType
-                    decodeVar['stimulus'] = tempSti
-
-                    classifier = "SVC"
-                    varList = ['stimulus']
-
-                    # examine the average running speed
-                    ave_running = [np.nanmean(analysis.beh['running_speed'][i]) for i in range(len(trialMask))]
-                    run_threshold = 1.2
-                    trials_include = np.array(ave_running)<run_threshold
-
-                    #combine with trialMask and subtrial Mask
-                    new_trialMask = np.logical_and(trials_include,trialMask)
-                    new_subTrialMask ={}
-                    for key in subTrialMask.keys():
-                        new_subTrialMask[key] = np.logical_and(subTrialMask[key],trials_include)
-
-                    analysis.decoding(decodeSig, decodeVar, varList,
-                                          new_trialMask, new_subTrialMask, classifier,
-                                          regr_time, saveDataFile)
-                        #                else:
-                        #                    print('Decoding done!')
-                        # ensemble size analysis
-
-                    #analysis.decode_analysis(gn_series, saveDataFile, saveDataPath)
-
-    def decoding_summary(self, group_adt, group_juv, group_label):
+    def decoding_summary(self, group_adt, group_juv, classifier, spec):
 
         # load data from adult animal
+        nIdx = 7 # get 80 neurons
+        # do 60 neurons later
+
         nFiles = group_adt.shape[0]
+        subject_ADT_withn = []
+        subject_ADT = []
         #n_ctrl = 20
         # read coefficient, sig cells, neurons with
         for f in tqdm(range(nFiles)):
             saveDataPath = os.path.join(group_adt.iloc[f]['fluo_analysis_dir'], 'decoding')
-            saveDataFile = os.path.join(saveDataPath, 'decodingResult.pickle')
+            saveDataFile = os.path.join(saveDataPath, 'decodingResult_'+spec +classifier+ '.pickle')
             # load the pickle file
             with open(saveDataFile, 'rb') as file:
                 decodingResult = pickle.load(file)
@@ -3925,6 +4389,229 @@ class fluoSum:
                                                     0))
                     decodingSummary_ADT[var]['ctrl_accuracy'] = np.empty((len(regr_time),
                                                     0))
+                    decodingSummary_ADT[var]['accuracy_nNeurons'] = np.empty((len(regr_time),0))
+                    decodingSummary_ADT[var]['ctrl_nNeurons'] = np.empty((len(regr_time),0))
+
+                # load predictions based on different trial types
+                    decodingSummary_ADT[var]['prediction_accuracy'] = {}
+                    decodingSummary_ADT[var]['prediction_accuracy_ctrl'] = {}
+                    for key in decodingResult[var]['prediction_accuracy'].keys():
+                        decodingSummary_ADT[var]['prediction_accuracy'][key] = np.empty((len(regr_time), 0))
+                        decodingSummary_ADT[var]['prediction_accuracy_ctrl'][key] = np.empty((len(regr_time), 0))
+
+                    # load ensemble size result
+
+                    maxNeurons = 300
+                    nNeurons = np.arange(0,300,10)
+                    decodingSummary_ADT[var]['ensemble_accuracy0-1'] = np.full((len(nNeurons),nFiles), np.nan)
+                    decodingSummary_ADT[var]['ensemble_accuracy1-2'] = np.full((len(nNeurons), nFiles), np.nan)
+                    decodingSummary_ADT[var]['ensemble_size'] = decodingResult[var]['decode_realSize']['nNeurons']
+                    decodingSummary_ADT[var]['ensemble_ctrl0-1'] = np.full((len(nNeurons),nFiles), np.nan)
+                    decodingSummary_ADT[var]['ensemble_ctrl1-2'] = np.full((len(nNeurons), nFiles), np.nan)
+                    decodingSummary_ADT[var]['ensemble_accuracy_trialType'] = {}
+                    for key in decodingResult[var]['prediction_accuracy'].keys():
+                        decodingSummary_ADT[var]['ensemble_accuracy_trialType'][key]={}
+                        decodingSummary_ADT[var]['ensemble_accuracy_trialType'][key]['accuracy0-1'] = np.full((len(nNeurons),nFiles), np.nan)
+                        decodingSummary_ADT[var]['ensemble_accuracy_trialType'][key]['accuracy1-2'] = np.full((len(nNeurons),nFiles), np.nan)
+                        decodingSummary_ADT[var]['ensemble_accuracy_trialType'][key]['ctrl0-1'] = np.full((len(nNeurons),nFiles), np.nan)
+                        decodingSummary_ADT[var]['ensemble_accuracy_trialType'][key]['ctrl1-2'] = np.full((len(nNeurons),nFiles), np.nan)
+
+            for var in decodingVars:
+            # calculate fraction of neurons that are significant
+                decodingSummary_ADT[var]['accuracy'] = np.concatenate((decodingSummary_ADT[var]['accuracy'],
+                                                        decodingResult[var]['accuracy'][:, np.newaxis]), 1)
+                decodingSummary_ADT[var]['ctrl_accuracy'] = np.concatenate((decodingSummary_ADT[var]['ctrl_accuracy'],
+                                                        decodingResult[var]['ctrl_accuracy'][:, np.newaxis]), 1)
+                if nIdx < decodingResult[var]['decode_realSize']['accuracy'].shape[1]:
+                    subject_ADT_withn.append(group_adt.iloc[f]['subject'])
+                    decodingSummary_ADT[var]['accuracy_nNeurons'] = np.concatenate((decodingSummary_ADT[var]['accuracy_nNeurons'],
+                                                        decodingResult[var]['decode_realSize']['accuracy'][:, nIdx][:,np.newaxis]), 1)
+                    decodingSummary_ADT[var]['ctrl_nNeurons'] = np.concatenate((decodingSummary_ADT[var]['ctrl_nNeurons'],
+                                                        decodingResult[var]['decode_realSize']['ctrl_accuracy'][:, nIdx][:,np.newaxis]), 1)
+            #get the average decoding accuracy between 1-2 second after cue
+
+                    timeMask1 = np.logical_and(regr_time>=0, regr_time<1)
+                    timeMask2 = np.logical_and(regr_time >= 1, regr_time < 2)
+                    ave_accuracy1 = np.nanmean(decodingResult[var]['decode_realSize']['accuracy'][timeMask1, :],0)
+                    ave_accuracy2 = np.nanmean(decodingResult[var]['decode_realSize']['accuracy'][timeMask2, :],
+                                          0)
+                    ave_ctrl1 = np.nanmean(decodingResult[var]['decode_realSize']['ctrl_accuracy'][timeMask1, :],
+                                      0)
+                    ave_ctrl2 = np.nanmean(decodingResult[var]['decode_realSize']['ctrl_accuracy'][timeMask2, :],
+                                      0)
+                    subject_ADT.append(group_adt.iloc[f]['subject'])
+                    decodingSummary_ADT[var]['ensemble_accuracy0-1'][:len(ave_accuracy1),f] = ave_accuracy1
+                    decodingSummary_ADT[var]['ensemble_accuracy1-2'][:len(ave_accuracy2), f] = ave_accuracy2
+                    decodingSummary_ADT[var]['ensemble_ctrl0-1'][:len(ave_accuracy1),f] = ave_ctrl1
+                    decodingSummary_ADT[var]['ensemble_ctrl1-2'][:len(ave_accuracy2), f] = ave_ctrl2
+
+                    for key in decodingResult[var]['prediction_accuracy'].keys():
+                        ave_accuracy1 = np.nanmean(decodingResult[var]['decode_realSize']['prediction_accuracy'][key][timeMask1, :], 0)
+                        ave_accuracy2 = np.nanmean(decodingResult[var]['decode_realSize']['prediction_accuracy'][key][timeMask2, :],
+                                                   0)
+                        ave_ctrl1 = np.nanmean(decodingResult[var]['decode_realSize']['prediction_accuracy_ctrl'][key][timeMask1, :],
+                                               0)
+                        ave_ctrl2 = np.nanmean(decodingResult[var]['decode_realSize']['prediction_accuracy_ctrl'][key][timeMask2, :],
+                                               0)
+                        decodingSummary_ADT[var]['ensemble_accuracy_trialType'][key]['accuracy0-1'][:len(ave_accuracy1),f] = ave_accuracy1
+                        decodingSummary_ADT[var]['ensemble_accuracy_trialType'][key]['accuracy1-2'][:len(ave_accuracy1),f] = ave_accuracy2
+                        decodingSummary_ADT[var]['ensemble_accuracy_trialType'][key]['ctrl0-1'][:len(ave_accuracy1),f] = ave_ctrl1
+                        decodingSummary_ADT[var]['ensemble_accuracy_trialType'][key]['ctrl1-2'][:len(ave_accuracy1),f] = ave_ctrl2
+
+                for key in decodingResult[var]['prediction_accuracy'].keys():
+                        decodingSummary_ADT[var]['prediction_accuracy'][key] = np.concatenate(
+                                (decodingSummary_ADT[var]['prediction_accuracy'][key],
+                                 decodingResult[var]['prediction_accuracy'][key][:,np.newaxis]), 1)
+                        decodingSummary_ADT[var]['prediction_accuracy_ctrl'][key] = np.concatenate(
+                                (decodingSummary_ADT[var]['prediction_accuracy_ctrl'][key],
+                                 decodingResult[var]['prediction_accuracy_ctrl'][key][:, np.newaxis]), 1)
+
+        decodingSummary_ADT['subject'] = subject_ADT
+        decodingSummary_ADT['subject_withn'] = subject_ADT_withn
+        # load juv group
+        nFiles = group_juv.shape[0]
+        subject_JUV_withn = []
+        subject_JUV = []
+        # read coefficient, sig cells, neurons with
+        for f in tqdm(range(nFiles)):
+
+            saveDataPath = os.path.join(group_juv.iloc[f]['fluo_analysis_dir'], 'decoding')
+            saveDataFile = os.path.join(saveDataPath, 'decodingResult_'+spec+classifier+'.pickle')
+            # load the pickle file
+            with open(saveDataFile, 'rb') as file:
+                decodingResult = pickle.load(file)
+            print(group_juv.iloc[f]['fluo_analysis_dir'])
+            print(np.max(decodingResult['stimulus']['decode_realSize']['nNeurons']))
+            # initialize variables
+            if f==0:
+                decodingVars = decodingResult['var']
+                regr_time = decodingResult['time']
+                decodingSummary_JUV = {}
+                for var in decodingVars:
+                    decodingSummary_JUV[var] = {}
+                    decodingSummary_JUV[var]['accuracy'] = np.empty((len(regr_time),
+                                                    0))
+                    decodingSummary_JUV[var]['ctrl_accuracy'] = np.empty((len(regr_time),
+                                                    0))
+                    decodingSummary_JUV[var]['accuracy_nNeurons'] = np.empty((len(regr_time), 0))
+                    decodingSummary_JUV[var]['ctrl_nNeurons'] = np.empty((len(regr_time), 0))
+
+                    maxNeurons = 300
+                    nNeurons = np.arange(0,300,10)
+                    decodingSummary_JUV[var]['ensemble_accuracy0-1'] = np.full((len(nNeurons),nFiles), np.nan)
+                    decodingSummary_JUV[var]['ensemble_accuracy1-2'] = np.full((len(nNeurons), nFiles), np.nan)
+                    decodingSummary_JUV[var]['ensemble_size'] = decodingResult[var]['decode_realSize']['nNeurons']
+                    decodingSummary_JUV[var]['ensemble_ctrl0-1'] = np.full((len(nNeurons),nFiles), np.nan)
+                    decodingSummary_JUV[var]['ensemble_ctrl1-2'] = np.full((len(nNeurons), nFiles), np.nan)
+                    decodingSummary_JUV[var]['ensemble_accuracy_trialType'] = {}
+                    for key in decodingResult[var]['prediction_accuracy'].keys():
+                        decodingSummary_JUV[var]['ensemble_accuracy_trialType'][key]={}
+                        decodingSummary_JUV[var]['ensemble_accuracy_trialType'][key]['accuracy0-1'] = np.full((len(nNeurons),nFiles), np.nan)
+                        decodingSummary_JUV[var]['ensemble_accuracy_trialType'][key]['accuracy1-2'] = np.full((len(nNeurons),nFiles), np.nan)
+                        decodingSummary_JUV[var]['ensemble_accuracy_trialType'][key]['ctrl0-1'] = np.full((len(nNeurons),nFiles), np.nan)
+                        decodingSummary_JUV[var]['ensemble_accuracy_trialType'][key]['ctrl1-2'] = np.full((len(nNeurons),nFiles), np.nan)
+
+                    # load predictions based on different trial types
+                    decodingSummary_JUV[var]['prediction_accuracy'] = {}
+                    decodingSummary_JUV[var]['prediction_accuracy_ctrl'] = {}
+                    for key in decodingResult[var]['prediction_accuracy'].keys():
+
+                        decodingSummary_JUV[var]['prediction_accuracy'][key] = np.empty((len(regr_time), 0))
+                        decodingSummary_JUV[var]['prediction_accuracy_ctrl'][key] = np.empty((len(regr_time), 0))
+
+            for var in decodingVars:
+            # calculate fraction of neurons that are significant
+                decodingSummary_JUV[var]['accuracy'] = np.concatenate((decodingSummary_JUV[var]['accuracy'],
+                                                        decodingResult[var]['accuracy'][:, np.newaxis]), 1)
+                decodingSummary_JUV[var]['ctrl_accuracy'] = np.concatenate((decodingSummary_JUV[var]['ctrl_accuracy'],
+                                                        decodingResult[var]['ctrl_accuracy'][:, np.newaxis]), 1)
+                if nIdx < decodingResult[var]['decode_realSize']['accuracy'].shape[1]:
+                    subject_JUV_withn.append(group_juv.iloc[f]['subject'])
+                    decodingSummary_JUV[var]['accuracy_nNeurons'] = np.concatenate(
+                    (decodingSummary_JUV[var]['accuracy_nNeurons'],
+                            decodingResult[var]['decode_realSize']['accuracy'][:, nIdx][:, np.newaxis]), 1)
+                    decodingSummary_JUV[var]['ctrl_nNeurons'] = np.concatenate((decodingSummary_JUV[var]['ctrl_nNeurons'],
+                                                                            decodingResult[var]['decode_realSize'][
+                                                                                'ctrl_accuracy'][:, nIdx][:,
+                                                                            np.newaxis]), 1)
+
+                    timeMask1 = np.logical_and(regr_time>=0, regr_time<1)
+                    timeMask2 = np.logical_and(regr_time >= 1, regr_time < 2)
+                    ave_accuracy1 = np.nanmean(decodingResult[var]['decode_realSize']['accuracy'][timeMask1, :],0)
+                    ave_accuracy2 = np.nanmean(decodingResult[var]['decode_realSize']['accuracy'][timeMask2, :],
+                                          0)
+                    ave_ctrl1 = np.nanmean(decodingResult[var]['decode_realSize']['ctrl_accuracy'][timeMask1, :],
+                                      0)
+                    ave_ctrl2 = np.nanmean(decodingResult[var]['decode_realSize']['ctrl_accuracy'][timeMask2, :],
+                                      0)
+                    subject_JUV.append(group_juv.iloc[f]['subject'])
+                    decodingSummary_JUV[var]['ensemble_accuracy0-1'][:len(ave_accuracy1),f] = ave_accuracy1
+                    decodingSummary_JUV[var]['ensemble_accuracy1-2'][:len(ave_accuracy2), f] = ave_accuracy2
+                    decodingSummary_JUV[var]['ensemble_ctrl0-1'][:len(ave_accuracy1),f] = ave_ctrl1
+                    decodingSummary_JUV[var]['ensemble_ctrl1-2'][:len(ave_accuracy2), f] = ave_ctrl2
+                    for key in decodingResult[var]['prediction_accuracy'].keys():
+                        ave_accuracy1 = np.nanmean(decodingResult[var]['decode_realSize']['prediction_accuracy'][key][timeMask1, :], 0)
+                        ave_accuracy2 = np.nanmean(decodingResult[var]['decode_realSize']['prediction_accuracy'][key][timeMask2, :],
+                                                   0)
+                        ave_ctrl1 = np.nanmean(decodingResult[var]['decode_realSize']['prediction_accuracy_ctrl'][key][timeMask1, :],
+                                               0)
+                        ave_ctrl2 = np.nanmean(decodingResult[var]['decode_realSize']['prediction_accuracy_ctrl'][key][timeMask2, :],
+                                               0)
+                        decodingSummary_JUV[var]['ensemble_accuracy_trialType'][key]['accuracy0-1'][:len(ave_accuracy1),f] = ave_accuracy1
+                        decodingSummary_JUV[var]['ensemble_accuracy_trialType'][key]['accuracy1-2'][:len(ave_accuracy1),f] = ave_accuracy2
+                        decodingSummary_JUV[var]['ensemble_accuracy_trialType'][key]['ctrl0-1'][:len(ave_accuracy1),f] = ave_ctrl1
+                        decodingSummary_JUV[var]['ensemble_accuracy_trialType'][key]['ctrl1-2'][:len(ave_accuracy1),f] = ave_ctrl2
+
+                for key in decodingResult[var]['prediction_accuracy'].keys():
+                    decodingSummary_JUV[var]['prediction_accuracy'][key] = np.concatenate(
+                        (decodingSummary_JUV[var]['prediction_accuracy'][key],
+                         decodingResult[var]['prediction_accuracy'][key][:,np.newaxis]), 1)
+                    decodingSummary_JUV[var]['prediction_accuracy_ctrl'][key] = np.concatenate(
+                        (decodingSummary_JUV[var]['prediction_accuracy_ctrl'][key],
+                         decodingResult[var]['prediction_accuracy_ctrl'][key][:, np.newaxis]), 1)
+
+        decodingSummary_JUV['subject'] = subject_JUV
+        decodingSummary_JUV['subject_withn'] = subject_JUV_withn
+
+        # plot the summary results
+        savefigpath = os.path.join(self.root_dir, self.summary_dir, 'fluo')
+        if not os.path.exists(savefigpath):
+            os.makedirs(savefigpath)
+
+        savefigpath = os.path.join(self.root_dir, self.summary_dir, 'fluo')
+        self.plot_decoding_summary(decodingSummary_ADT, decodingSummary_JUV, regr_time, savefigpath, classifier, nIdx)
+
+    def decoding_summary_byAnimal(self, group_adt, group_juv, group_label):
+        nIdx = 7 # get 80 neurons
+        # do 60 neurons later
+
+        nFiles = group_adt.shape[0]
+        adt_animal = []
+        #n_ctrl = 20
+        # read coefficient, sig cells, neurons with
+        for f in tqdm(range(nFiles)):
+            saveDataPath = os.path.join(group_adt.iloc[f]['fluo_analysis_dir'], 'decoding')
+            saveDataFile = os.path.join(saveDataPath, 'decodingResult.pickle')
+            adt_animal.append(group_adt.iloc[f]['subject'])
+            # load the pickle file
+            with open(saveDataFile, 'rb') as file:
+                decodingResult = pickle.load(file)
+
+            # initialize variables
+            if f==0:
+                decodingVars = decodingResult['var']
+                regr_time = decodingResult['time']
+                decodingSummary_ADT = {}
+                for var in decodingVars:
+                    decodingSummary_ADT[var] = {}
+                    decodingSummary_ADT[var]['accuracy'] = np.empty((len(regr_time),
+                                                    0))
+                    decodingSummary_ADT[var]['ctrl_accuracy'] = np.empty((len(regr_time),
+                                                    0))
+                    if var=='stimulus':
+                        decodingSummary_ADT[var]['accuracy_nNeurons'] = np.empty((len(regr_time),0))
+                        decodingSummary_ADT[var]['ctrl_nNeurons'] = np.empty((len(regr_time),0))
+
                 # load predictions based on different trial types
                     decodingSummary_ADT[var]['prediction_accuracy'] = {}
                     decodingSummary_ADT[var]['prediction_accuracy_ctrl'] = {}
@@ -3936,10 +4623,18 @@ class fluoSum:
                     if var=='stimulus':
                         maxNeurons = 300
                         nNeurons = np.arange(0,300,10)
-                        decodingSummary_ADT[var]['ensemble_accuracy'] = np.full((len(nNeurons),nFiles), np.nan)
+                        decodingSummary_ADT[var]['ensemble_accuracy0-1'] = np.full((len(nNeurons),nFiles), np.nan)
+                        decodingSummary_ADT[var]['ensemble_accuracy1-2'] = np.full((len(nNeurons), nFiles), np.nan)
                         decodingSummary_ADT[var]['ensemble_size'] = decodingResult[var]['decode_realSize']['nNeurons']
-                        decodingSummary_ADT[var]['ensemble_ctrl'] = np.full((len(nNeurons),nFiles), np.nan)
-
+                        decodingSummary_ADT[var]['ensemble_ctrl0-1'] = np.full((len(nNeurons),nFiles), np.nan)
+                        decodingSummary_ADT[var]['ensemble_ctrl1-2'] = np.full((len(nNeurons), nFiles), np.nan)
+                        decodingSummary_ADT[var]['ensemble_accuracy_trialType'] = {}
+                        for key in decodingResult[var]['prediction_accuracy'].keys():
+                            decodingSummary_ADT[var]['ensemble_accuracy_trialType'][key]={}
+                            decodingSummary_ADT[var]['ensemble_accuracy_trialType'][key]['accuracy0-1'] = np.full((len(nNeurons),nFiles), np.nan)
+                            decodingSummary_ADT[var]['ensemble_accuracy_trialType'][key]['accuracy1-2'] = np.full((len(nNeurons),nFiles), np.nan)
+                            decodingSummary_ADT[var]['ensemble_accuracy_trialType'][key]['ctrl0-1'] = np.full((len(nNeurons),nFiles), np.nan)
+                            decodingSummary_ADT[var]['ensemble_accuracy_trialType'][key]['ctrl1-2'] = np.full((len(nNeurons),nFiles), np.nan)
 
             for var in decodingVars:
             # calculate fraction of neurons that are significant
@@ -3947,30 +4642,56 @@ class fluoSum:
                                                         decodingResult[var]['accuracy'][:, np.newaxis]), 1)
                 decodingSummary_ADT[var]['ctrl_accuracy'] = np.concatenate((decodingSummary_ADT[var]['ctrl_accuracy'],
                                                         decodingResult[var]['ctrl_accuracy'][:, np.newaxis]), 1)
+                if var=='stimulus' and nIdx < decodingResult[var]['decode_realSize']['accuracy'].shape[1]:
+                    decodingSummary_ADT[var]['accuracy_nNeurons'] = np.concatenate((decodingSummary_ADT[var]['accuracy_nNeurons'],
+                                                        decodingResult[var]['decode_realSize']['accuracy'][:, nIdx][:,np.newaxis]), 1)
+                    decodingSummary_ADT[var]['ctrl_nNeurons'] = np.concatenate((decodingSummary_ADT[var]['ctrl_nNeurons'],
+                                                        decodingResult[var]['decode_realSize']['ctrl_accuracy'][:, nIdx][:,np.newaxis]), 1)
                 #get the average decoding accuracy between 1-2 second after cue
                 if var == "stimulus":
-                    timeMask = np.logical_and(regr_time>=1, regr_time<2)
-                    ave_accuracy = np.nanmean(decodingResult[var]['decode_realSize']['accuracy'][timeMask,:],
-                                              0)
-                    ave_ctrl = np.nanmean(decodingResult[var]['decode_realSize']['ctrl_accuracy'][timeMask,:],
+                    timeMask1 = np.logical_and(regr_time>=0, regr_time<1)
+                    timeMask2 = np.logical_and(regr_time >= 1, regr_time < 2)
+                    ave_accuracy1 = np.nanmean(decodingResult[var]['decode_realSize']['accuracy'][timeMask1, :],0)
+                    ave_accuracy2 = np.nanmean(decodingResult[var]['decode_realSize']['accuracy'][timeMask2, :],
                                           0)
-                    decodingSummary_ADT[var]['ensemble_accuracy'][:len(ave_accuracy),f] = ave_accuracy
-                    decodingSummary_ADT[var]['ensemble_ctrl'][:len(ave_accuracy), f] = ave_ctrl
+                    ave_ctrl1 = np.nanmean(decodingResult[var]['decode_realSize']['ctrl_accuracy'][timeMask1, :],
+                                      0)
+                    ave_ctrl2 = np.nanmean(decodingResult[var]['decode_realSize']['ctrl_accuracy'][timeMask2, :],
+                                      0)
+                    decodingSummary_ADT[var]['ensemble_accuracy0-1'][:len(ave_accuracy1),f] = ave_accuracy1
+                    decodingSummary_ADT[var]['ensemble_accuracy1-2'][:len(ave_accuracy2), f] = ave_accuracy2
+                    decodingSummary_ADT[var]['ensemble_ctrl0-1'][:len(ave_accuracy1),f] = ave_ctrl1
+                    decodingSummary_ADT[var]['ensemble_ctrl1-2'][:len(ave_accuracy2), f] = ave_ctrl2
+
+                    for key in decodingResult[var]['prediction_accuracy'].keys():
+                        ave_accuracy1 = np.nanmean(decodingResult[var]['decode_realSize']['prediction_accuracy'][key][timeMask1, :], 0)
+                        ave_accuracy2 = np.nanmean(decodingResult[var]['decode_realSize']['prediction_accuracy'][key][timeMask2, :],
+                                                   0)
+                        ave_ctrl1 = np.nanmean(decodingResult[var]['decode_realSize']['prediction_accuracy_ctrl'][key][timeMask1, :],
+                                               0)
+                        ave_ctrl2 = np.nanmean(decodingResult[var]['decode_realSize']['prediction_accuracy_ctrl'][key][timeMask2, :],
+                                               0)
+                        decodingSummary_ADT[var]['ensemble_accuracy_trialType'][key]['accuracy0-1'][:len(ave_accuracy1),f] = ave_accuracy1
+                        decodingSummary_ADT[var]['ensemble_accuracy_trialType'][key]['accuracy1-2'][:len(ave_accuracy1),f] = ave_accuracy2
+                        decodingSummary_ADT[var]['ensemble_accuracy_trialType'][key]['ctrl0-1'][:len(ave_accuracy1),f] = ave_ctrl1
+                        decodingSummary_ADT[var]['ensemble_accuracy_trialType'][key]['ctrl1-2'][:len(ave_accuracy1),f] = ave_ctrl2
 
                 for key in decodingResult[var]['prediction_accuracy'].keys():
-                    decodingSummary_ADT[var]['prediction_accuracy'][key] = np.concatenate(
-                            (decodingSummary_ADT[var]['prediction_accuracy'][key],
-                             decodingResult[var]['prediction_accuracy'][key][:,np.newaxis]), 1)
-                    decodingSummary_ADT[var]['prediction_accuracy_ctrl'][key] = np.concatenate(
-                            (decodingSummary_ADT[var]['prediction_accuracy_ctrl'][key],
-                             decodingResult[var]['prediction_accuracy_ctrl'][key][:, np.newaxis]), 1)
+                        decodingSummary_ADT[var]['prediction_accuracy'][key] = np.concatenate(
+                                (decodingSummary_ADT[var]['prediction_accuracy'][key],
+                                 decodingResult[var]['prediction_accuracy'][key][:,np.newaxis]), 1)
+                        decodingSummary_ADT[var]['prediction_accuracy_ctrl'][key] = np.concatenate(
+                                (decodingSummary_ADT[var]['prediction_accuracy_ctrl'][key],
+                                 decodingResult[var]['prediction_accuracy_ctrl'][key][:, np.newaxis]), 1)
 
         # load juv group
         nFiles = group_juv.shape[0]
+        juv_animal = []
         # read coefficient, sig cells, neurons with
         for f in tqdm(range(nFiles)):
             saveDataPath = os.path.join(group_juv.iloc[f]['fluo_analysis_dir'], 'decoding')
             saveDataFile = os.path.join(saveDataPath, 'decodingResult.pickle')
+            juv_animal.append(group_juv.iloc[f]['subject'])
             # load the pickle file
             with open(saveDataFile, 'rb') as file:
                 decodingResult = pickle.load(file)
@@ -3986,15 +4707,26 @@ class fluoSum:
                                                     0))
                     decodingSummary_JUV[var]['ctrl_accuracy'] = np.empty((len(regr_time),
                                                     0))
+                    if var=='stimulus':
+                        decodingSummary_JUV[var]['accuracy_nNeurons'] = np.empty((len(regr_time),0))
+                        decodingSummary_JUV[var]['ctrl_nNeurons'] = np.empty((len(regr_time),0))
 
-                    if var == "stimulus":
                         maxNeurons = 300
                         nNeurons = np.arange(0,300,10)
-                        decodingSummary_JUV[var]['ensemble_accuracy'] = np.full((len(nNeurons),nFiles), np.nan)
+                        decodingSummary_JUV[var]['ensemble_accuracy0-1'] = np.full((len(nNeurons),nFiles), np.nan)
+                        decodingSummary_JUV[var]['ensemble_accuracy1-2'] = np.full((len(nNeurons), nFiles), np.nan)
                         decodingSummary_JUV[var]['ensemble_size'] = decodingResult[var]['decode_realSize']['nNeurons']
-                        decodingSummary_JUV[var]['ensemble_ctrl'] = np.full((len(nNeurons),nFiles), np.nan)
+                        decodingSummary_JUV[var]['ensemble_ctrl0-1'] = np.full((len(nNeurons),nFiles), np.nan)
+                        decodingSummary_JUV[var]['ensemble_ctrl1-2'] = np.full((len(nNeurons), nFiles), np.nan)
+                        decodingSummary_JUV[var]['ensemble_accuracy_trialType'] = {}
+                        for key in decodingResult[var]['prediction_accuracy'].keys():
+                            decodingSummary_JUV[var]['ensemble_accuracy_trialType'][key]={}
+                            decodingSummary_JUV[var]['ensemble_accuracy_trialType'][key]['accuracy0-1'] = np.full((len(nNeurons),nFiles), np.nan)
+                            decodingSummary_JUV[var]['ensemble_accuracy_trialType'][key]['accuracy1-2'] = np.full((len(nNeurons),nFiles), np.nan)
+                            decodingSummary_JUV[var]['ensemble_accuracy_trialType'][key]['ctrl0-1'] = np.full((len(nNeurons),nFiles), np.nan)
+                            decodingSummary_JUV[var]['ensemble_accuracy_trialType'][key]['ctrl1-2'] = np.full((len(nNeurons),nFiles), np.nan)
 
-                # load predictions based on different trial types
+                    # load predictions based on different trial types
                     decodingSummary_JUV[var]['prediction_accuracy'] = {}
                     decodingSummary_JUV[var]['prediction_accuracy_ctrl'] = {}
                     for key in decodingResult[var]['prediction_accuracy'].keys():
@@ -4008,14 +4740,41 @@ class fluoSum:
                                                         decodingResult[var]['accuracy'][:, np.newaxis]), 1)
                 decodingSummary_JUV[var]['ctrl_accuracy'] = np.concatenate((decodingSummary_JUV[var]['ctrl_accuracy'],
                                                         decodingResult[var]['ctrl_accuracy'][:, np.newaxis]), 1)
+                if var == 'stimulus' and nIdx < decodingResult[var]['decode_realSize']['accuracy'].shape[1]:
+                    decodingSummary_JUV[var]['accuracy_nNeurons'] = np.concatenate(
+                    (decodingSummary_JUV[var]['accuracy_nNeurons'],
+                            decodingResult[var]['decode_realSize']['accuracy'][:, nIdx][:, np.newaxis]), 1)
+                    decodingSummary_JUV[var]['ctrl_nNeurons'] = np.concatenate((decodingSummary_JUV[var]['ctrl_nNeurons'],
+                                                                            decodingResult[var]['decode_realSize'][
+                                                                                'ctrl_accuracy'][:, nIdx][:,
+                                                                            np.newaxis]), 1)
+
                 if var == "stimulus":
-                    timeMask = np.logical_and(regr_time >= 1, regr_time < 2)
-                    ave_accuracy = np.nanmean(decodingResult[var]['decode_realSize']['accuracy'][timeMask, :],
+                    timeMask1 = np.logical_and(regr_time>=0, regr_time<1)
+                    timeMask2 = np.logical_and(regr_time >= 1, regr_time < 2)
+                    ave_accuracy1 = np.nanmean(decodingResult[var]['decode_realSize']['accuracy'][timeMask1, :],0)
+                    ave_accuracy2 = np.nanmean(decodingResult[var]['decode_realSize']['accuracy'][timeMask2, :],
                                           0)
-                    ave_ctrl = np.nanmean(decodingResult[var]['decode_realSize']['ctrl_accuracy'][timeMask, :],
+                    ave_ctrl1 = np.nanmean(decodingResult[var]['decode_realSize']['ctrl_accuracy'][timeMask1, :],
                                       0)
-                    decodingSummary_JUV[var]['ensemble_accuracy'][:len(ave_accuracy), f] = ave_accuracy
-                    decodingSummary_JUV[var]['ensemble_ctrl'][:len(ave_accuracy), f] = ave_ctrl
+                    ave_ctrl2 = np.nanmean(decodingResult[var]['decode_realSize']['ctrl_accuracy'][timeMask2, :],
+                                      0)
+                    decodingSummary_JUV[var]['ensemble_accuracy0-1'][:len(ave_accuracy1),f] = ave_accuracy1
+                    decodingSummary_JUV[var]['ensemble_accuracy1-2'][:len(ave_accuracy2), f] = ave_accuracy2
+                    decodingSummary_JUV[var]['ensemble_ctrl0-1'][:len(ave_accuracy1),f] = ave_ctrl1
+                    decodingSummary_JUV[var]['ensemble_ctrl1-2'][:len(ave_accuracy2), f] = ave_ctrl2
+                    for key in decodingResult[var]['prediction_accuracy'].keys():
+                        ave_accuracy1 = np.nanmean(decodingResult[var]['decode_realSize']['prediction_accuracy'][key][timeMask1, :], 0)
+                        ave_accuracy2 = np.nanmean(decodingResult[var]['decode_realSize']['prediction_accuracy'][key][timeMask2, :],
+                                                   0)
+                        ave_ctrl1 = np.nanmean(decodingResult[var]['decode_realSize']['prediction_accuracy_ctrl'][key][timeMask1, :],
+                                               0)
+                        ave_ctrl2 = np.nanmean(decodingResult[var]['decode_realSize']['prediction_accuracy_ctrl'][key][timeMask2, :],
+                                               0)
+                        decodingSummary_JUV[var]['ensemble_accuracy_trialType'][key]['accuracy0-1'][:len(ave_accuracy1),f] = ave_accuracy1
+                        decodingSummary_JUV[var]['ensemble_accuracy_trialType'][key]['accuracy1-2'][:len(ave_accuracy1),f] = ave_accuracy2
+                        decodingSummary_JUV[var]['ensemble_accuracy_trialType'][key]['ctrl0-1'][:len(ave_accuracy1),f] = ave_ctrl1
+                        decodingSummary_JUV[var]['ensemble_accuracy_trialType'][key]['ctrl1-2'][:len(ave_accuracy1),f] = ave_ctrl2
 
                 for key in decodingResult[var]['prediction_accuracy'].keys():
                     decodingSummary_JUV[var]['prediction_accuracy'][key] = np.concatenate(
@@ -4026,13 +4785,89 @@ class fluoSum:
                          decodingResult[var]['prediction_accuracy_ctrl'][key][:, np.newaxis]), 1)
 
         # plot the summary results
-        savefigpath = os.path.join(self.root_dir, self.summary_dir, 'fluo')
+        savefigpath = os.path.join(self.root_dir, self.summary_dir, 'fluo', 'ByAnimal')
         if not os.path.exists(savefigpath):
             os.makedirs(savefigpath)
 
-        group_label = 'late'
-        savefigpath = os.path.join(self.root_dir, self.summary_dir, 'fluo')
-        self.plot_decoding_summary(decodingSummary_ADT, decodingSummary_JUV, regr_time, savefigpath, group_label)
+
+        # plot individual animals by decoding accuracy
+        adt_list = np.unique(adt_animal)
+        juv_list = np.unique(juv_animal)
+        for aa in adt_list:
+            self.plot_decoding_byAnimal(decodingSummary_ADT, adt_animal, aa, savefigpath)
+        for aa in juv_list:
+            self.plot_decoding_byAnimal(decodingSummary_JUV, juv_animal, aa, savefigpath)
+        # plot a combined result
+        nIdx = 7
+        plt.figure()
+        adt_cmap = plt.get_cmap('viridis')
+        juv_cmap = plt.get_cmap('plasma')
+        for idx,aa in enumerate(adt_list):
+            animalIdx = [i for i, x in enumerate(adt_animal) if x == aa]
+            x1 = np.array([2] * len(animalIdx))
+            jitter = 0.1
+            x_jittered =  np.random.uniform(-jitter, jitter, size=len(x1))
+            plt.scatter(x1-0.6+x_jittered, decodingSummary_ADT['stimulus']['ensemble_accuracy0-1'][nIdx,animalIdx],
+                        color = adt_cmap(idx*100), label = 'ADT')
+            plt.scatter(x1-0.2+x_jittered, decodingSummary_ADT['stimulus']['ensemble_ctrl0-1'][nIdx,animalIdx],
+                        color = adt_cmap(idx*100))
+
+            x2 = np.array([4] * len(animalIdx))
+            jitter = 0.1
+            x_jittered =  np.random.uniform(-jitter, jitter, size=len(x1))
+            plt.scatter(x2-0.6+x_jittered, decodingSummary_ADT['stimulus']['ensemble_accuracy1-2'][nIdx,animalIdx],
+                        color = adt_cmap(idx*100), label = 'ADT')
+            plt.scatter(x2-0.2+x_jittered, decodingSummary_ADT['stimulus']['ensemble_ctrl1-2'][nIdx,animalIdx],
+                        color = adt_cmap(idx*100))
+
+        for idx,aa in enumerate(juv_list):
+            animalIdx = [i for i, x in enumerate(juv_animal) if x == aa]
+            x1 = np.array([2] * len(animalIdx))
+            jitter = 0.1
+            x_jittered =  np.random.uniform(-jitter, jitter, size=len(x1))
+            plt.scatter(x1+0.2+x_jittered, decodingSummary_JUV['stimulus']['ensemble_accuracy0-1'][nIdx,animalIdx],
+                        color = juv_cmap(idx*100), label = 'ADT')
+            plt.scatter(x1+0.6+x_jittered, decodingSummary_JUV['stimulus']['ensemble_ctrl0-1'][nIdx,animalIdx],
+                        color = juv_cmap(idx*100))
+
+            x2 = np.array([4] * len(animalIdx))
+            jitter = 0.1
+            x_jittered =  np.random.uniform(-jitter, jitter, size=len(x1))
+            plt.scatter(x2+0.2+x_jittered, decodingSummary_JUV['stimulus']['ensemble_accuracy1-2'][nIdx,animalIdx],
+                        color = juv_cmap(idx*100), label = 'JUV')
+            plt.scatter(x2+0.6+x_jittered, decodingSummary_JUV['stimulus']['ensemble_ctrl1-2'][nIdx,animalIdx],
+                        color = juv_cmap(idx*100))
+            plt.xticks([2,4], ['0-1s','1-2s'])
+            plt.ylim([0.3,1.05])
+        plt.ylabel('Decoding acuracy')
+        plt.savefig(os.path.join(savefigpath, 'decoding_byAnimal.png'))
+
+    def plot_decoding_byAnimal(self,data,animalList, animalID, savefigpath):
+
+        # plot decoding accuracy against control
+        adtColor = (83/255,187/255,244/255)
+        juvColor = (255/255,67/255,46/255)
+
+        key = "stimulus"
+        nIdx = 7
+        animalIdx = [i for i,x in enumerate(animalList) if x==animalID]
+        plt.figure()
+        decoding_accuracy1 = data[key]['ensemble_accuracy0-1'][nIdx,animalIdx]
+        decoding_ctrl1 = data[key]['ensemble_ctrl0-1'][nIdx,animalIdx]
+        decoding_accuracy2 = data[key]['ensemble_accuracy1-2'][nIdx,animalIdx]
+        decoding_ctrl2 = data[key]['ensemble_ctrl1-2'][nIdx,animalIdx]
+        x1 = np.array([1]*len(animalIdx))
+        plt.scatter(x1-0.2, decoding_accuracy1,color = 'red')
+        plt.scatter(x1+0.2, decoding_ctrl1, color = 'black')
+        x2 = np.array([2]*len(animalIdx))
+        plt.scatter(x2-0.2, decoding_accuracy2, color = 'red')
+        plt.scatter(x2+0.2, decoding_ctrl2, color = 'black')
+        plt.ylim([0.3,1.05])
+        plt.xlim([0, 3])
+        plt.xticks([1,2], ['0-1s', '1-2s'])
+        plt.title(animalID)
+        plt.savefig(os.path.join(savefigpath, 'Decoding_accuracy_' + animalID + '.png'))
+        plt.close()
 
     def decoding_summary_running(self, group_adt, group_juv,group_label):
 
@@ -4169,8 +5004,8 @@ class fluoSum:
         savefigpath = os.path.join(self.root_dir, self.summary_dir, 'fluo')
         self.plot_decoding_summary(decodingSummary_ADT, decodingSummary_JUV, regr_time, savefigpath, group_label)
 
-    def plot_decoding_summary(self, decoding_ADT, decoding_JUV, regr_time, saveFigPath, group_label):
-        matplotlib.use('Qt5Agg')
+    def plot_decoding_summary(self, decoding_ADT, decoding_JUV, regr_time, saveFigPath, classifier, nIdx):
+        #matplotlib.use('Qt5Agg')
 
         #adtColor = (255 / 255, 189 / 255, 53 / 255)
         #juvColor = (63 / 255, 167 / 255, 150 / 255)
@@ -4179,199 +5014,104 @@ class fluoSum:
 
         varList = decoding_ADT.keys()
 
-        """ plot average decoding and by trial types"""
-        subplot_label = ['accuracy', 'Hit', 'FA',  'CorRej','Probe']
+
         for var in varList:
-            decodingPlot = StartSubplots(2, 3, ifSharey=True)
-            plt.ylim((0.3, 1.05))
-            decodingPlot.fig.suptitle('Average average decoding accuracy ' + var + '_' + group_label)
-            for idx, l in enumerate(subplot_label):
-                ## plot ADT animals
-                decodingPlot.ax[idx // 3, idx % 3].set_title(l)
-
-                if l == 'accuracy':
-                    tempBoot = bootstrap(decoding_ADT[var][l], 1, 1000)
-
-                    tempCtrlBoot = bootstrap(decoding_ADT[var]['ctrl_accuracy'], 1, 1000)
-
-                elif l == 'Probe':
-                    tempBoot = bootstrap(decoding_ADT[var]['prediction_accuracy'][l], 1, 1000)
-                    tempCtrlBoot = bootstrap(decoding_ADT[var]['prediction_accuracy_ctrl'][l], 1, 1000)
-
-                # for Hit, FA, CorRej trials
+            if var!='subject' and var!="subject_withn":
+                decodingPlot = StartPlots()
+                if var == 'trialType':
+                    plt.ylim((0.2,1.05))
                 else:
-                    tempBoot = bootstrap(decoding_ADT[var]['prediction_accuracy'][l], 1, 1000)
-                    tempCtrlBoot = bootstrap(decoding_ADT[var]['prediction_accuracy_ctrl'][l], 1, 1000)
+                    plt.ylim((0.3, 1.05))
 
-                # plot data and ctrl
+                decodingPlot.ax.set_title('Average average decoding accuracy '+var + str(10*(nIdx+1)) + '_' + classifier)
+
+                tempBoot = bootstrap(decoding_ADT[var]['accuracy_nNeurons'], 1, 1000, median=True)
+
+                tempCtrlBoot = bootstrap(decoding_ADT[var]['ctrl_nNeurons'], 1, 1000, median=True)
+
+            # plot data and ctrl
                 plotIdx = np.logical_and(regr_time > -2, regr_time < 2)
-                decodingPlot.ax[idx // 3, idx % 3].plot(regr_time[plotIdx], tempBoot['bootAve'][plotIdx],
-                                                            c=adtColor)
-                decodingPlot.ax[idx // 3, idx % 3].fill_between(regr_time[plotIdx], tempBoot['bootLow'][plotIdx],
-                                                                    tempBoot['bootHigh'][plotIdx],
-                                                                    alpha=0.2, color=adtColor)
+                decodingPlot.ax.plot(regr_time[plotIdx], tempBoot['bootAve'][plotIdx],
+                                                    c=adtColor)
+                decodingPlot.ax.fill_between(regr_time[plotIdx], tempBoot['bootLow'][plotIdx],
+                                                            tempBoot['bootHigh'][plotIdx],
+                                                            alpha=0.2, color=adtColor)
 
-                decodingPlot.ax[idx // 3, idx % 3].plot(regr_time[plotIdx], tempCtrlBoot['bootAve'][plotIdx],
-                                                        c=(0.7, 0.7, 0.7))
-                decodingPlot.ax[idx // 3, idx % 3].fill_between(regr_time[plotIdx], tempCtrlBoot['bootLow'][plotIdx],
-                                                                tempCtrlBoot['bootHigh'][plotIdx],
-                                                                alpha=0.2, color=(0.7, 0.7, 0.7))
+                decodingPlot.ax.plot(regr_time[plotIdx], tempCtrlBoot['bootAve'][plotIdx],
+                                                    c=(0.7, 0.7, 0.7))
+                decodingPlot.ax.fill_between(regr_time[plotIdx], tempCtrlBoot['bootLow'][plotIdx],
+                                                            tempCtrlBoot['bootHigh'][plotIdx],
+                                                            alpha=0.2, color=(0.7, 0.7, 0.7))
 
-                # plot JUV
-                decodingPlot.ax[idx // 3, idx % 3].set_title(l)
+                tempBoot = bootstrap(decoding_JUV[var]['accuracy_nNeurons'], 1, 1000, median=True)
 
-                if l == 'accuracy':
-                    tempBoot = bootstrap(decoding_JUV[var][l], 1, 1000)
+                tempCtrlBoot = bootstrap(decoding_JUV[var]['ctrl_nNeurons'], 1, 1000, median=True)
+                decodingPlot.ax.plot(regr_time[plotIdx], tempBoot['bootAve'][plotIdx],
+                                                    c=juvColor)
+                decodingPlot.ax.fill_between(regr_time[plotIdx], tempBoot['bootLow'][plotIdx],
+                                                            tempBoot['bootHigh'][plotIdx],
+                                                            alpha=0.2, color=juvColor)
 
-                    tempCtrlBoot = bootstrap(decoding_JUV[var]['ctrl_accuracy'], 1, 1000)
+                decodingPlot.ax.plot(regr_time[plotIdx], tempCtrlBoot['bootAve'][plotIdx],
+                                                    c=(0.7, 0.7, 0.7))
+                decodingPlot.ax.fill_between(regr_time[plotIdx], tempCtrlBoot['bootLow'][plotIdx],
+                                                            tempCtrlBoot['bootHigh'][plotIdx],
+                                                            alpha=0.2, color=(0.7, 0.7, 0.7))
+                # determine signficant level
+                # bonferroni test or FDR correction
 
-                    # determine signficant level
-                    # bonferroni test or FDR correction
-                    p_list = []
-                    dt = np.mean(np.diff(regr_time))
-                    for tt in range(len(regr_time)):
-                        statistic, p_MWtest = mannwhitneyu(decoding_JUV[var][l][tt,:],
-                                                           decoding_ADT[var][l][tt,:])
-                        p_list.append(p_MWtest)
-                    q_values = multipletests(p_list, method='fdr_bh')[1]
-                        # Set your desired FDR level (e.g., 0.05)
-                    FDR_threshold = 0.05
+        # anova
+                resp_anova = np.concatenate((decoding_ADT[var]['accuracy_nNeurons'].T.flatten(),
+                                     decoding_JUV[var]['accuracy_nNeurons'].T.flatten()))
 
-                        # Identify significant results
-                    significant_results = [p < FDR_threshold for p in q_values]
-                    for tt in range(len(regr_time)):
-                        if significant_results[tt]:
-                            decodingPlot.ax[idx // 3, idx % 3].plot(regr_time[tt] + dt * np.array([-0.5, 0.5]),
-                                                                    [1.0, 1.0], color=(139/255, 137 / 255, 184/255), linewidth=5)
 
-                elif l == 'Probe':
-                    tempBoot = bootstrap(decoding_JUV[var]['prediction_accuracy'][l], 1, 1000)
-                    tempCtrlBoot = bootstrap(decoding_JUV[var]['prediction_accuracy_ctrl'][l], 1, 1000)
+                age_anova = ['ADT'] * decoding_ADT[var]['accuracy_nNeurons'].shape[0]*decoding_ADT[var]['accuracy_nNeurons'].shape[1] +\
+                        ['JUV'] * decoding_JUV[var]['accuracy_nNeurons'].shape[0]*decoding_JUV[var]['accuracy_nNeurons'].shape[1]
+                time_anova = list(regr_time)*(decoding_ADT[var]['accuracy_nNeurons'].shape[1]+decoding_JUV[var]['accuracy_nNeurons'].shape[1])
+                # subject_anova = []
+                # for sub in decoding_ADT['subject_withn']:
+                #     subject_anova += [sub]*decoding_ADT[var]['accuracy_nNeurons'].shape[0]
+                # for sub in decoding_JUV['subject_withn']:
+                #     subject_anova += [sub]*decoding_JUV[var]['accuracy_nNeurons'].shape[0]
 
-                # for Hit, FA, CorRej trials
-                else:
-                    tempBoot = bootstrap(decoding_JUV[var]['prediction_accuracy'][l], 1, 1000)
-                    tempCtrlBoot = bootstrap(decoding_JUV[var]['prediction_accuracy_ctrl'][l], 1, 1000)
+                anova_data = pd.DataFrame({'age': age_anova,
+                                   'time': time_anova,
+                                   #'subject': subject_anova,
+                                   'response': resp_anova,
+                                   })
+                model = ols('response ~ C(age)*time', anova_data).fit()
+                anova_table = sm.stats.anova_lm(model, typ=2)
+                print("Anova table for decoding accuracy and age + time for " + var)
+                print(anova_table)
 
-                    p_list = []
-                    dt = np.mean(np.diff(regr_time))
-                    for tt in range(len(regr_time)):
-                        statistic, p_MWtest = mannwhitneyu(decoding_JUV[var]['prediction_accuracy'][l][tt,:],
-                                                           decoding_ADT[var]['prediction_accuracy'][l][tt,:])
-                        p_list.append(p_MWtest)
-                    q_values = multipletests(p_list, method='fdr_tsbky')[1]
-                        # Set your desired FDR level (e.g., 0.05)
-                    FDR_threshold = 0.05
 
-                        # Identify significant results
-                    significant_results = [p < FDR_threshold for p in q_values]
-                    for tt in range(len(regr_time)):
-                        if significant_results[tt]:
-                            decodingPlot.ax[idx // 3, idx % 3].plot(regr_time[tt] + dt * np.array([-0.5, 0.5]),
-                                                                    [1.0, 1.0], color=(139/255, 137 / 255, 184/255), linewidth=5)
+        # Identify significant results
+                decodingPlot.save_plot('Decoding accuracy for neurons ' + str((nIdx+1)*10) + var+'_'+classifier+'.png',
+                                       'png', saveFigPath)
+                decodingPlot.save_plot('Decoding accuracy for neurons ' + str((nIdx+1)*10) + var+'_'+classifier+'.svg',
+                                       'svg', saveFigPath)
 
-                # plot data and ctrl
-                plotIdx = np.logical_and(regr_time > -2, regr_time < 2)
-                decodingPlot.ax[idx // 3, idx % 3].plot(regr_time[plotIdx], tempBoot['bootAve'][plotIdx],
-                                                        c=juvColor)
-                decodingPlot.ax[idx // 3, idx % 3].fill_between(regr_time[plotIdx], tempBoot['bootLow'][plotIdx],
-                                                                tempBoot['bootHigh'][plotIdx],
-                                                                alpha=0.2, color=juvColor)
+        # save the average decoding accuracy for every session
+                timeMask1 = np.logical_and(regr_time >= 0, regr_time <= 1)
+                timeMask2 = np.logical_and(regr_time >= 1, regr_time <= 2)
+                ADT1 = np.mean(decoding_ADT[var]['accuracy'][timeMask1,:],0)
+                ADT2 = np.mean(decoding_ADT[var]['accuracy'][timeMask2,:],0)
+                JUV1 = np.mean(decoding_JUV[var]['accuracy'][timeMask1,:],0)
+                JUV2 = np.mean(decoding_JUV[var]['accuracy'][timeMask2,:],0)
+                ADT1_Ctrl = np.mean(decoding_ADT[var]['ctrl_accuracy'][timeMask1,:],0)
+                ADT2_Ctrl = np.mean(decoding_ADT[var]['ctrl_accuracy'][timeMask2,:],0)
+                JUV1_Ctrl = np.mean(decoding_JUV[var]['ctrl_accuracy'][timeMask1,:],0)
+                JUV2_Ctrl = np.mean(decoding_JUV[var]['ctrl_accuracy'][timeMask2,:],0)
 
-                decodingPlot.ax[idx // 3, idx % 3].plot(regr_time[plotIdx], tempCtrlBoot['bootAve'][plotIdx],
-                                                        c=(0.7, 0.7, 0.7))
-                decodingPlot.ax[idx // 3, idx % 3].fill_between(regr_time[plotIdx], tempCtrlBoot['bootLow'][plotIdx],
-                                                                tempCtrlBoot['bootHigh'][plotIdx],
-                                                                alpha=0.2, color=(0.7, 0.7, 0.7))
+                # print resul
 
-            decodingAveragePlot = StartSubplots(2, 3, ifSharey=True)
-            plt.ylim((0.3, 1.05))
+                data = {'ADT1':ADT1, 'ADT2':ADT2, 'JUV1':JUV1, 'JUV2':JUV2,
+                        'ADT1_Ctrl':ADT1_Ctrl, 'ADT2_Ctrl':ADT2_Ctrl, 'JUV1_Ctrl':JUV1_Ctrl, 'JUV2_Ctrl':JUV2_Ctrl}
+                with open(os.path.join(saveFigPath, 'decoding_accuracy_1sWindow_allSession_'+var+'_'+classifier+'.pickle'), 'wb') as f:
+                    # save as pickle file
+                    pickle.dump(data,f)
+                f.close()
 
-            decodingAveragePlot.fig.suptitle('Average decoding accuracy ' + var + '_' + group_label)
-            for idx, l in enumerate(subplot_label):
-                ## plot ADT animals
-                decodingAveragePlot.ax[idx // 3, idx % 3].set_title(l)
-                timeWindow1 = np.logical_and(regr_time > 0, regr_time < 1)
-                timeWindow2 = np.logical_and(regr_time >= 1, regr_time < 2)
-                if l == 'accuracy':
-                    tempAve0_1 = np.nanmean((decoding_ADT[var][l][timeWindow1,:]),0)
-                    tempAve1_2 = np.nanmean((decoding_ADT[var][l][timeWindow2,:]),0)
-                    tempCtrl0_1= np.nanmean((decoding_ADT[var]['ctrl_accuracy'][timeWindow1,:]), 0)
-                    tempCtrl1_2 = np.nanmean((decoding_ADT[var]['ctrl_accuracy'][timeWindow2,:]), 0)
-
-                # for Hit, FA, CorRej trials
-                else:
-                    tempAve0_1 = np.nanmean((decoding_ADT[var]['prediction_accuracy'][l][timeWindow1,:]), 0)
-                    tempCtrl0_1 = np.nanmean((decoding_ADT[var]['prediction_accuracy_ctrl'][l][timeWindow1,:]), 0)
-
-                    tempAve1_2 = np.nanmean((decoding_ADT[var]['prediction_accuracy'][l][timeWindow2,:]), 0)
-                    tempCtrl1_2 = np.nanmean((decoding_ADT[var]['prediction_accuracy_ctrl'][l][timeWindow2,:]), 0)
-
-                # plot data and ctrl
-                x = np.array([1,2])
-                boxplot = decodingAveragePlot.ax[idx // 3, idx % 3].boxplot([tempAve0_1, tempAve1_2],positions=x - 0.3, widths=0.2,
-                    patch_artist = True, showfliers = False )
-                for box in boxplot['boxes']:
-                    box.set(facecolor=adtColor)
-                boxplot=decodingAveragePlot.ax[idx // 3, idx % 3].boxplot([tempCtrl0_1, tempCtrl1_2],positions=x - 0.1, widths=0.2,
-                                                                          patch_artist=True, showfliers=False)
-                for box in boxplot['boxes']:
-                    box.set(facecolor=(0.7, 0.7, 0.7))
-
-                decodingAveragePlot.ax[idx//3, idx%3].set_xticks(x, ['0-1s', '1-2s'])
-
-                # plot JUV
-                decodingAveragePlot.ax[idx // 3, idx % 3].set_title(l)
-
-                if l == 'accuracy':
-                    tempAve0_1 = np.nanmean((decoding_JUV[var][l][timeWindow1,:]),0)
-                    tempAve1_2 = np.nanmean((decoding_JUV[var][l][timeWindow2,:]),0)
-                    tempCtrl0_1= np.nanmean((decoding_JUV[var]['ctrl_accuracy'][timeWindow1,:]), 0)
-                    tempCtrl1_2 = np.nanmean((decoding_JUV[var]['ctrl_accuracy'][timeWindow2,:]), 0)
-
-                    # for Hit, FA, CorRej trials
-
-                # for Hit, FA, CorRej trials
-                else:
-                    tempAve0_1 = np.nanmean((decoding_JUV[var]['prediction_accuracy'][l][timeWindow1,:]), 0)
-                    tempCtrl0_1 = np.nanmean((decoding_JUV[var]['prediction_accuracy_ctrl'][l][timeWindow1,:]), 0)
-
-                    tempAve1_2 = np.nanmean((decoding_JUV[var]['prediction_accuracy'][l][timeWindow2,:]), 0)
-                    tempCtrl1_2 = np.nanmean((decoding_JUV[var]['prediction_accuracy_ctrl'][l][timeWindow2,:]), 0)
-
-                # printing p-value
-                if l=='accuracy':
-                    stats,p1 = mannwhitneyu(np.nanmean((decoding_JUV[var][l][timeWindow1,:]), 0),
-                                            np.nanmean((decoding_ADT[var][l][timeWindow1,:]), 0))
-                    stats,p2 = mannwhitneyu(np.nanmean((decoding_JUV[var][l][timeWindow2,:]), 0),
-                                            np.nanmean((decoding_ADT[var][l][timeWindow2,:]), 0))
-                else:
-                    stats,p1 = mannwhitneyu(np.nanmean((decoding_JUV[var]['prediction_accuracy'][l][timeWindow1,:]), 0),
-                                            np.nanmean((decoding_ADT[var]['prediction_accuracy'][l][timeWindow1,:]), 0))
-                    stats,p2 = mannwhitneyu(np.nanmean((decoding_JUV[var]['prediction_accuracy'][l][timeWindow2,:]), 0),
-                                            np.nanmean((decoding_ADT[var]['prediction_accuracy'][l][timeWindow2,:]), 0))
-                print('p value for ' + l + 'in 0-1s windoe is ' + str(p1))
-                print('p value for ' + l + 'in 1-2s windoe is ' + str(p2))
-                # plot data and ctrl
-                boxplot=decodingAveragePlot.ax[idx // 3, idx % 3].boxplot([tempAve0_1, tempAve1_2],positions=x + 0.1, widths=0.2,
-                                                            patch_artist=True, showfliers=False)
-                for box in boxplot['boxes']:
-                    box.set(facecolor=juvColor)
-
-                boxplot = decodingAveragePlot.ax[idx // 3, idx % 3].boxplot([tempCtrl0_1, tempCtrl1_2],positions=x + 0.3, widths=0.2,
-                                                                            patch_artist=True, showfliers=False)
-                for box in boxplot['boxes']:
-                    box.set(facecolor=(0.7, 0.7, 0.7))
-
-                decodingAveragePlot.ax[idx // 3, idx % 3].set_xticks([1,2], ['0-1s', '1-2s'])
-
-            decodingAveragePlot.save_plot('Decoding accuracy averaged in 1s window for variable ' + var + '_' + group_label+'.tif',
-                                   'tiff', saveFigPath)
-            decodingAveragePlot.save_plot('Decoding accuracy averaged in 1s window  for variable ' + var + '_' + group_label+'.svg',
-                                   'svg', saveFigPath)
-            plt.close()
-
-        """plot decoding rate separted by prior reward"""
         # subplot_label = ['Hit', 'FA', 'CorRej']
         # for var in varList:
         #     decodingPlot = StartSubplots(1, 3, ifSharey=True)
@@ -4451,73 +5191,414 @@ class fluoSum:
         #     plt.close()
 
         # plot decoding accuracy as a function of ensemble size
-        #maxNeurons = 300
-        nNeurons = np.arange(10, 310, 10)
-        decodingPlot = StartPlots()
+        # maxNeurons = 300
 
-        # get bootstrap of ADT and JUV
-        ADTBoot = bootstrap(decoding_ADT['stimulus']['ensemble_accuracy'],1,1000)
-        JUVBoot = bootstrap(decoding_JUV['stimulus']['ensemble_accuracy'],1,1000)
+        """plot decoding accuracy according to the number of neurons"""
+        for var in varList:
+            if var != 'subject' and var != "subject_withn":
+                nNeurons = np.arange(10, 310, 10)
+                decodingPlot = StartPlots()
 
-        ADTCtrlBoot = bootstrap(decoding_ADT['stimulus']['ensemble_ctrl'],1,1000)
-        JUVCtrlBoot = bootstrap(decoding_JUV['stimulus']['ensemble_ctrl'], 1, 1000)
+                # get bootstrap of ADT and JUV
+                ADTBoot = bootstrap(decoding_ADT[var]['ensemble_accuracy1-2'],1,1000, median=True)
+                JUVBoot = bootstrap(decoding_JUV[var]['ensemble_accuracy1-2'],1,1000, median=True)
 
-        decodingPlot.ax.plot(nNeurons, ADTBoot['bootAve'],
-                                                c=adtColor, label = 'ADT')
-        decodingPlot.ax.plot(nNeurons, JUVBoot['bootAve'],
-                             c=juvColor, label='JUV')
-        decodingPlot.ax.fill_between(nNeurons, ADTBoot['bootLow'],
-                                                ADTBoot['bootHigh'],
-                                                alpha=0.2, color=adtColor)
+                ADTCtrlBoot = bootstrap(decoding_ADT[var]['ensemble_ctrl1-2'],1,1000, median=True)
+                JUVCtrlBoot = bootstrap(decoding_JUV[var]['ensemble_ctrl1-2'], 1, 1000, median=True)
 
-        decodingPlot.ax.fill_between(nNeurons, JUVBoot['bootLow'],
-                                            JUVBoot['bootHigh'],
-                                            alpha=0.2, color=juvColor)
-        decodingPlot.ax.plot(nNeurons, ADTCtrlBoot['bootAve'],'--',
-                             c = adtColor)
-        decodingPlot.ax.plot(nNeurons, JUVCtrlBoot['bootAve'],'--',
-                             c = juvColor)
-        decodingPlot.legend(['ADT', 'JUV'])
-        decodingPlot.ax.set_xlim([30,100])
-        decodingPlot.ax.set_ylim([0.2,1.05])
-        decodingPlot.ax.set_xlabel('Number of Neurons')
-        decodingPlot.ax.set_ylabel('Average decoding accuracy')
+                decodingPlot.ax.plot(nNeurons, ADTBoot['bootAve'],
+                                                        c=adtColor, label = 'ADT')
+                decodingPlot.ax.plot(nNeurons, JUVBoot['bootAve'],
+                                     c=juvColor, label='JUV')
+                decodingPlot.ax.fill_between(nNeurons, ADTBoot['bootLow'],
+                                                        ADTBoot['bootHigh'],
+                                                        alpha=0.2, color=adtColor)
+
+                decodingPlot.ax.fill_between(nNeurons, JUVBoot['bootLow'],
+                                                    JUVBoot['bootHigh'],
+                                                    alpha=0.2, color=juvColor)
+                decodingPlot.ax.plot(nNeurons, ADTCtrlBoot['bootAve'],'--',
+                                     c = adtColor)
+                decodingPlot.ax.plot(nNeurons, JUVCtrlBoot['bootAve'],'--',
+                                     c = juvColor)
+                decodingPlot.legend(['ADT', 'JUV'])
+                decodingPlot.ax.set_xlim([10,100])
+                if var == 'trialType':
+                    decodingPlot.ax.set_ylim([0.2,1.05])
+                else:
+                    decodingPlot.ax.set_ylim([0.3, 1.05])
+                decodingPlot.ax.set_xlabel('Number of Neurons')
+                decodingPlot.ax.set_ylabel('Average decoding accuracy')
+                decodingPlot.save_plot('Decoding accuracy ensemble size_'+var + '_'+ classifier + '.png',
+                                       'png', saveFigPath)
+                decodingPlot.save_plot('Decoding accuracy ensemble size_'+var + '_'
+                                        + classifier + '.svg',
+                                       'svg', saveFigPath)
+                plt.close()
+
        # stats
-        p_list = []
-        dt = np.mean(np.diff(nNeurons[:10]))
-        for nn in range(11):
-            ADT = np.array(
-                [value for value in decoding_ADT['stimulus']['ensemble_accuracy'][nn, :] if not np.isnan(value)])
-            JUV = np.array(
-                [value for value in decoding_JUV['stimulus']['ensemble_accuracy'][nn, :] if not np.isnan(value)])
-            #res = median_test(ADT,JUV)
-            statistic, p_MWtest = mannwhitneyu(ADT, JUV)
-            stats,p = ttest_ind(ADT, JUV)
-            #results = bs.bootstrap_ab(ADT, JUV, bs_stats.median, bs_compare.difference)
+                p_list = []
+                dt = np.mean(np.diff(nNeurons[:10]))
+                resp = []
+                age = []
+                size = []
+                subject = []
+                for nn in range(10):
+                    ADT = np.array(
+                        [value for value in decoding_ADT[var]['ensemble_accuracy1-2'][nn, :] if not np.isnan(value)])
+                    subjectADT_temp = []
+                    for ss in range(len(decoding_ADT[var]['ensemble_accuracy1-2'][nn, :])):
+                        if not np.isnan(decoding_ADT[var]['ensemble_accuracy1-2'][nn, ss]):
+                            subjectADT_temp.append(decoding_ADT['subject'][ss])
+                    subjectJUV_temp = []
+                    JUV = np.array(
+                        [value for value in decoding_JUV[var]['ensemble_accuracy1-2'][nn, :] if not np.isnan(value)])
+                    for ss in range(len(decoding_JUV[var]['ensemble_accuracy1-2'][nn, :])):
+                        if not np.isnan(decoding_JUV[var]['ensemble_accuracy1-2'][nn, ss]):
+                            subjectJUV_temp.append(decoding_JUV['subject'][ss])
+                    # get the data for ANOVA
+                    resp = np.concatenate((resp, ADT, JUV),0)
+                    age = np.concatenate((age, ['ADT']*len(ADT), ['JUV']*len(JUV)))
+                    size = np.concatenate((size, [nn]*len(ADT), [nn]*len(JUV)))
+                    subject = np.concatenate((subject,subjectADT_temp, subjectJUV_temp))
+                    # res = median_test(ADT,JUV)
+                    statistic, p_MWtest = mannwhitneyu(ADT, JUV)
+                    # stats,p = ttest_ind(ADT, JUV)
+                    # results = bs.bootstrap_ab(ADT, JUV, bs_stats.median, bs_compare.difference)
 
-            # Get the p-value
-            #p_value = results.p_value
-            p_list.append(p_MWtest)
-        q_values = multipletests(p_list, method='fdr_by')[1]
-        reject, p_adjusted, _, _ = multipletests(p_list, method='bonferroni')
-        # Set your desired FDR level (e.g., 0.05)
-        FDR_threshold = 0.05
+                    # Get the p-value
+                    # p_value = results.p_value
+                    p_list.append(p_MWtest)
+                q_values = multipletests(p_list, method='fdr_bh')[1]
+                #reject, p_adjusted, _, _ = multipletests(p_list, method='bonferroni')
+                # Set your desired FDR level (e.g., 0.05)
+                FDR_threshold = 0.05
+
+                #save the raw p and adjusted p
+                pData = {"nNeurons":np.arange(0,100,10),
+                    "p_MW": p_list,
+                         'Adjusted p (FDR-bh)':q_values}
+                pDF = pd.DataFrame(pData)
+                print(pDF)
+                pDF.to_csv(os.path.join(saveFigPath, 'Decoding accuracy ensemble size (stimulus).csv'))
+
+                # anova for ADT and JUV data
+                anova_data = pd.DataFrame({'age': age,
+                                           'size': size,
+                                           'subject': subject,
+                                           'response': resp,
+                                           })
+                model = ols('response ~ C(age)*size', anova_data).fit()
+                anova_table = sm.stats.anova_lm(model, typ=2)
+                print("Anova table for decoding accuracy and ensemble size: ")
+                print(anova_table)
 
         # Identify significant results
-        significant_results = [p < FDR_threshold for p in q_values]
-        for tt in range(len(nNeurons[1:11:2])):
-            if significant_results[tt]:
-                decodingPlot.ax.plot(nNeurons[tt*2+1] + dt * np.array([-0.5, 0.5]),
-                                                        [1.0, 1.0], color=(139/255, 137 / 255, 184/255), linewidth=5)
 
-        decodingPlot.save_plot('Decoding accuracy ensemble size_' + group_label + '.tif',
-                               'tiff', saveFigPath)
-        decodingPlot.save_plot('Decoding accuracy ensemble size_'
-                                + group_label + '.svg',
-                               'svg', saveFigPath)
-        plt.close()
+
+        # violin plot for average decoding accuracy between 0-1 and 1-2 seconds, when n = 80 neurons
+        nIdx = nIdx  # nNeurons = 80
+        ADTFiles = decoding_ADT['stimulus']['accuracy'].shape[1]
+        JUVFiles = decoding_JUV['stimulus']['accuracy'].shape[1]
+        data = {
+            'Age Group': ['ADT']*ADTFiles*2+['JUV']*JUVFiles*2,
+            'Time Range': ['0-1s']*ADTFiles + ['1-2s']*ADTFiles+['0-1s']*JUVFiles + ['1-2s']*JUVFiles,
+            #'Type': ['Accuracy']*(ADTFiles*2+JUVFiles*2),['Ctrl']*(ADTFiles*2+JUVFiles*2),
+            'Accuracy': np.concatenate((decoding_ADT['stimulus']['ensemble_accuracy0-1'][nIdx, :],decoding_ADT['stimulus']['ensemble_accuracy1-2'][nIdx, :],
+                                        decoding_JUV['stimulus']['ensemble_accuracy0-1'][nIdx, :],decoding_JUV['stimulus']['ensemble_accuracy1-2'][nIdx, :])),
+            'Control': np.concatenate((decoding_ADT['stimulus']['ensemble_ctrl0-1'][nIdx,:], decoding_ADT['stimulus']['ensemble_ctrl1-2'][nIdx, :],
+                                       decoding_JUV['stimulus']['ensemble_ctrl0-1'][nIdx, :], decoding_JUV['stimulus']['ensemble_ctrl1-2'][nIdx, :]))
+        }
+
+
+        # boxplot for average decoding accuracy in 1s windows
+        for var in varList:
+            if var != 'subject' and var != 'subject_withn':
+                ADT1 = np.array(
+                    [value for value in decoding_ADT[var]['ensemble_accuracy0-1'][nIdx, :] if
+                     not np.isnan(value)])
+                JUV1 = np.array(
+                    [value for value in decoding_JUV[var]['ensemble_accuracy0-1'][nIdx, :] if
+                     not np.isnan(value)])
+                # res = median_test(ADT,JUV)
+                p_MWtest1 = mannwhitneyu(ADT1, JUV1)[1]
+                # plt.text(0, 1.05, 'p = ' + str(np.round(p_MWtest1, 4)), fontsize=20)
+
+                # 1-2s p values
+                ADT2 = np.array(
+                    [value for value in decoding_ADT[var]['ensemble_accuracy1-2'][nIdx, :] if
+                     not np.isnan(value)])
+                JUV2 = np.array(
+                    [value for value in decoding_JUV[var]['ensemble_accuracy1-2'][nIdx, :] if
+                     not np.isnan(value)])
+                # res = median_test(ADT,JUV)
+                p_MWtest2 = mannwhitneyu(ADT2, JUV2)[1]
+                p_list = np.array([p_MWtest1, p_MWtest2])
+                q_list = multipletests(p_list, method='fdr_bh')[1]
+                print(var)
+                print("\n")
+                print("Mannwhitney test between age groups in 0-1 and 1-2 s windows:\n")
+                print("p value: ");
+                print(p_list)
+                #print("Adjusted p value: ");
+                #print(q_list)
+                ADT1_Ctrl = np.array(
+                    [value for value in decoding_ADT[var]['ensemble_ctrl0-1'][nIdx, :] if not np.isnan(value)])
+                ADT2_Ctrl = np.array(
+                    [value for value in decoding_ADT[var]['ensemble_ctrl1-2'][nIdx, :] if not np.isnan(value)])
+                JUV1_Ctrl = np.array(
+                    [value for value in decoding_JUV[var]['ensemble_ctrl0-1'][nIdx, :] if not np.isnan(value)])
+                JUV2_Ctrl = np.array(
+                    [value for value in decoding_JUV[var]['ensemble_ctrl1-2'][nIdx, :] if not np.isnan(value)])
+
+                x = np.array([1, 2])
+                averageBoxPlot = StartPlots()
+                averageBoxPlot.ax.set_title(
+                    'Decoding Accuracy and Control by Age Group, ' + str((nIdx + 1) * 10) + ' cells')
+                averageBoxPlot.ax.set_ylim([0.45, 1])
+                boxplot = averageBoxPlot.ax.boxplot([ADT1, ADT2],
+                                                    positions=x - 0.3, widths=0.1, patch_artist=True, showfliers=False,
+                                                    boxprops=dict(facecolor=adtColor, edgecolor=adtColor),
+                                                    whiskerprops=dict(color=adtColor),
+                                                    capprops=dict(color=adtColor),
+                                                    medianprops=dict(marker='o', color='white', markersize=5))
+
+                boxplot = averageBoxPlot.ax.boxplot([ADT1_Ctrl, ADT2_Ctrl],
+                                                    positions=x - 0.1, widths=0.1, patch_artist=True, showfliers=False,
+                                                    boxprops=dict(facecolor=(0.7, 0.7, 0.7), edgecolor=(0.7, 0.7, 0.7)),
+                                                    whiskerprops=dict(color=(0.7, 0.7, 0.7)),
+                                                    capprops=dict(color=(0.7, 0.7, 0.7)),
+                                                    medianprops=dict(marker='o', color='white', markersize=5))
+
+                averageBoxPlot.ax.set_xticks(x, ['0-1s', '1-2s'])
+
+                # plot JUV
+                # plot data and ctrl
+                boxplot = averageBoxPlot.ax.boxplot([JUV1, JUV2],
+                                                    positions=x + 0.1, widths=0.1, patch_artist=True, showfliers=False,
+                                                    boxprops=dict(facecolor=juvColor, edgecolor=juvColor),
+                                                    whiskerprops=dict(color=juvColor),
+                                                    capprops=dict(color=juvColor),
+                                                    medianprops=dict(marker='o', color='white', markersize=5))
+
+                boxplot = averageBoxPlot.ax.boxplot([JUV1_Ctrl, JUV2_Ctrl],
+                                                    positions=x + 0.3, widths=0.1, patch_artist=True, showfliers=False,
+                                                    boxprops=dict(facecolor=(0.7, 0.7, 0.7), edgecolor=(0.7, 0.7, 0.7)),
+                                                    whiskerprops=dict(color=(0.7, 0.7, 0.7)),
+                                                    capprops=dict(color=(0.7, 0.7, 0.7)),
+                                                    medianprops=dict(marker='o', color='white', markersize=5)
+                                                    )
+
+                averageBoxPlot.ax.set_xticks([1, 2], ['0-1s', '1-2s'])
+                if var == "trialType":
+                    averageBoxPlot.ax.set_ylim([0.2, 1])
+                else:
+                    averageBoxPlot.ax.set_ylim([0.3, 1])
+                plt.savefig(os.path.join(saveFigPath, 'Average decoding accuracy boxplot ' + var + '.png'), format='png')
+                plt.savefig(os.path.join(saveFigPath, 'Average decoding accuracy boxplot ' + var + '.svg'), format='svg')
+
+                print("Median of ADT 0-1s:", np.median(ADT1))
+                print("MAD of ADT 0-1s:", median_abs_deviation(ADT1))
+                print ("Median of ADT 1-2s:", np.median(ADT2))
+                print("MAD of ADT 1-2s:", median_abs_deviation(ADT2))
+                print("Median of JUV 0-1s:", np.median(JUV1))
+                print("MAD of JUV 0-1s:", median_abs_deviation(JUV1))
+                print("Median of JUV 1-2s:", np.median(JUV2))
+                print("MAD of JUV 1-2s:", median_abs_deviation(JUV2))
+
+                print("Median of ADT ctrl 0-1s:", np.median(ADT1_Ctrl))
+                print("MAD of ADT ctrl 0-1s:", median_abs_deviation(ADT1_Ctrl))
+                print ("Median of ADT ctrl 1-2s:", np.median(ADT2_Ctrl))
+                print("MAD of ADT ctrl 1-2s:", median_abs_deviation(ADT2_Ctrl))
+                print("Median of JUV ctrl 0-1s:", np.median(JUV1_Ctrl))
+                print("MAD of JUV ctrl 0-1s:", median_abs_deviation(JUV1_Ctrl))
+                print("Median of JUV ctrl 1-2s:", np.median(JUV2_Ctrl))
+                print("MAD of JUV ctrl 1-2s:", median_abs_deviation(JUV2_Ctrl))
+
+                # save the data to combine with nonlearners late
+                data = {'ADT1':ADT1, 'ADT2':ADT2, 'JUV1':JUV1, 'JUV2':JUV2,
+                        'ADT1_Ctrl':ADT1_Ctrl, 'ADT2_Ctrl':ADT2_Ctrl, 'JUV1_Ctrl':JUV1_Ctrl, 'JUV2_Ctrl':JUV2_Ctrl}
+                with open(os.path.join(saveFigPath, 'decoding_accuracy_'+var+'_1sWindow.pickle'), 'wb') as f:
+                    # save as pickle file
+                    pickle.dump(data,f)
+                    f.close()
+                # wilcoxon test between accuracy and ctrls
+                stat,p_ctrlADT1 = wilcoxon(ADT1, ADT1_Ctrl)
+                stat,p_ctrlADT2 = wilcoxon(ADT2, ADT2_Ctrl)
+                stat,p_ctrlJUV1 = wilcoxon(JUV1, JUV1_Ctrl)
+                stat,p_ctrlJUV2 = wilcoxon(JUV2, JUV2_Ctrl)
+                p_list_ctrl = np.array([p_ctrlADT1, p_ctrlADT2, p_ctrlJUV1, p_ctrlJUV2])
+                q_list_ctrl = multipletests(p_list_ctrl, method = 'fdr_bh')[1]
+
+                # print the p values
+                groups = ['ADT 0-1s', 'ADT 1-2s', 'JUV 0-1s', 'JUV 1-2s']
+                for idx,group in enumerate(groups):
+                    print("Decoding accuracy for "+group+ var+f" p-value: {p_list_ctrl[idx]:.4e}, adjusted p-value: {q_list_ctrl[idx]:.4e}")
+                # save the pvalues
+                data = {'groups':['Age0-1', 'Age1-2', 'ADT0-1', 'ADT1-2','JUV0-1', 'JUV1-2'],
+                        'p_values': np.concatenate((p_list, p_list_ctrl)),
+                        'adj_p_values': np.concatenate((q_list, q_list_ctrl))}
+                dataDF = pd.DataFrame(data)
+                dataDF.to_csv(os.path.join(saveFigPath, 'stats_for_aveDecoding_n='+str((nIdx+1)*10)+var+'.csv'))
+
+
+
+        #plot for different trial types for stimulus only
+        ADT1_trialType = {}
+        ADT1_Ctrl_trialType={}
+        ADT2_trialType = {}
+        ADT2_Ctrl_trialType = {}
+        JUV1_trialType = {}
+        JUV1_Ctrl_trialType = {}
+        JUV2_trialType = {}
+        JUV2_Ctrl_trialType = {}
+        timeMask1 = np.logical_and(regr_time>=0, regr_time<1)
+        timeMask2 = np.logical_and(regr_time>=1, regr_time<2)
+        for trial in decoding_ADT['stimulus']['prediction_accuracy'].keys():
+            ADT1_trialType[trial] = decoding_ADT['stimulus']['ensemble_accuracy_trialType'][trial]['accuracy0-1'][nIdx, :]
+            ADT1_trialType[trial]= ADT1_trialType[trial][~np.isnan(ADT1_trialType[trial])]
+            ADT2_trialType[trial] = decoding_ADT['stimulus']['ensemble_accuracy_trialType'][trial]['accuracy1-2'][nIdx, :]
+            ADT2_trialType[trial] = ADT2_trialType[trial][~np.isnan(ADT2_trialType[trial])]
+            JUV1_trialType[trial] = decoding_JUV['stimulus']['ensemble_accuracy_trialType'][trial]['accuracy0-1'][nIdx, :]
+            JUV1_trialType[trial] = JUV1_trialType[trial][~np.isnan(JUV1_trialType[trial])]
+            JUV2_trialType[trial] = decoding_JUV['stimulus']['ensemble_accuracy_trialType'][trial]['accuracy1-2'][nIdx, :]
+            JUV2_trialType[trial] = JUV2_trialType[trial][~np.isnan(JUV2_trialType[trial])]
+            ADT1_Ctrl_trialType[trial] = decoding_ADT['stimulus']['ensemble_accuracy_trialType'][trial]['ctrl0-1'][nIdx, :]
+            ADT1_Ctrl_trialType[trial] = ADT1_Ctrl_trialType[trial][~np.isnan(ADT1_Ctrl_trialType[trial])]
+            ADT2_Ctrl_trialType[trial] = decoding_ADT['stimulus']['ensemble_accuracy_trialType'][trial]['ctrl1-2'][nIdx, :]
+            ADT2_Ctrl_trialType[trial] = ADT2_Ctrl_trialType[trial][~np.isnan(ADT2_Ctrl_trialType[trial])]
+            JUV1_Ctrl_trialType[trial] = decoding_JUV['stimulus']['ensemble_accuracy_trialType'][trial]['ctrl0-1'][nIdx, :]
+            JUV1_Ctrl_trialType[trial] = JUV1_Ctrl_trialType[trial][~np.isnan(JUV1_Ctrl_trialType[trial])]
+            JUV2_Ctrl_trialType[trial] = decoding_JUV['stimulus']['ensemble_accuracy_trialType'][trial]['ctrl1-2'][nIdx, :]
+            JUV2_Ctrl_trialType[trial] = JUV2_Ctrl_trialType[trial][~np.isnan(JUV2_Ctrl_trialType[trial])]
+
+        # collect data for anova
+        resp = []
+        trial = []
+        age = []
+        time = []
+        averageBoxPlot = StartSubplots(2,2,ifSharey=True)
+        x= np.array([1,2])
+        for xplot,key in enumerate(decoding_ADT['stimulus']['prediction_accuracy'].keys()):
+            if key!="Probe":
+                resp = np.concatenate((resp, ADT2_trialType[key]))
+                trial = np.concatenate((trial, np.ones(len(ADT1_trialType[key]))*(xplot+1)))
+                age = np.concatenate((age, np.ones(len(ADT1_trialType[key]))))
+
+            stats,p1 = wilcoxon(ADT2_trialType[key],ADT2_Ctrl_trialType[key])
+            print(key)
+            print("Median of ADT 1-2s:", np.median(ADT2_trialType[key]))
+            print("MAD of ADT 1-2s:", median_abs_deviation(ADT2_trialType[key]))
+            print("Median of ADT ctrl 1-2s:", np.median(ADT2_Ctrl_trialType[key]))
+            print("MAD of ADT ctrl 1-2s:", median_abs_deviation(ADT2_Ctrl_trialType[key]))
+            print("Wilcoxon p value", p1)
+
+            #time = np.concatenate((time, np.ones(len(ADT1_trialType[key])), np.ones(len(ADT1_trialType[key]))*2))
+            averageBoxPlot.ax[xplot//2, xplot%2].set_title(key+' '+str((nIdx+1)*10)+' cells')
+            if key == 'trialType':
+                averageBoxPlot.ax[xplot//2, xplot%2].set_ylim([0.2,1])
+            else:
+                averageBoxPlot.ax[xplot // 2, xplot % 2].set_ylim([0.3, 1])
+            boxplot = averageBoxPlot.ax[xplot//2, xplot%2].boxplot([ADT1_trialType[key], ADT2_trialType[key]],
+                                            positions= x - 0.3,widths=0.1,patch_artist=True, showfliers=False,
+                                            boxprops=dict(facecolor=adtColor, edgecolor=adtColor),
+                                            whiskerprops=dict(color=adtColor),
+                                            capprops=dict(color=adtColor),
+                                            medianprops=dict(marker='o', color='white', markersize=5))
+
+            boxplot =averageBoxPlot.ax[xplot//2, xplot%2].boxplot([ADT1_Ctrl_trialType[key],ADT2_Ctrl_trialType[key]],
+                                           positions=x - 0.1, widths=0.1,patch_artist=True, showfliers=False,
+                                           boxprops=dict(facecolor=(0.7, 0.7, 0.7), edgecolor=(0.7, 0.7, 0.7)),
+                                            whiskerprops=dict(color=(0.7, 0.7, 0.7)),
+                                            capprops=dict(color=(0.7, 0.7, 0.7)),
+                                            medianprops=dict(marker='o', color='white', markersize=5))
+
+            averageBoxPlot.ax[xplot//2, xplot%2].set_xticks(x, ['0-1s', '1-2s'])
+
+        # plot JUV
+        # plot data and ctrl
+            if key != "Probe":
+                resp = np.concatenate((resp, JUV2_trialType[key]))
+                trial = np.concatenate((trial, np.ones(len(JUV1_trialType[key]))*(xplot+1)))
+                age = np.concatenate((age, np.ones(len(JUV1_trialType[key]))*2))
+                time = np.concatenate((time, np.ones(len(JUV1_trialType[key])), np.ones(len(JUV1_trialType[key]))*2))
+            stats, p1 = wilcoxon(JUV2_trialType[key], JUV2_Ctrl_trialType[key])
+            print("Median of JUV 1-2s:", np.median(JUV2_trialType[key]))
+            print("MAD of JUV 1-2s:", median_abs_deviation(JUV2_trialType[key]))
+            print("Median of JUV ctrl 1-2s:", np.median(JUV2_Ctrl_trialType[key]))
+            print("MAD of JUV ctrl 1-2s:", median_abs_deviation(JUV2_Ctrl_trialType[key]))
+            print('Wilcoxon p value', p1)
+
+            stats,p2 = mannwhitneyu(ADT2_trialType[key], JUV2_trialType[key])
+            print('Mannwhitney between age', p2)
+            boxplot = averageBoxPlot.ax[xplot//2, xplot%2].boxplot([JUV1_trialType[key], JUV2_trialType[key]],
+                                            positions=x + 0.1,widths=0.1,patch_artist=True, showfliers=False,
+                                            boxprops=dict(facecolor=juvColor, edgecolor=juvColor),
+                                            whiskerprops=dict(color=juvColor),
+                                            capprops=dict(color=juvColor),
+                                            medianprops=dict(marker='o', color='white', markersize=5))
+
+            boxplot = averageBoxPlot.ax[xplot//2, xplot%2].boxplot([JUV1_Ctrl_trialType[key], JUV2_Ctrl_trialType[key]],
+                                            positions=x + 0.3,widths=0.1, patch_artist=True, showfliers=False,
+                                            boxprops=dict(facecolor=(0.7, 0.7, 0.7), edgecolor=(0.7, 0.7, 0.7)),
+                                            whiskerprops=dict(color=(0.7, 0.7, 0.7)),
+                                            capprops=dict(color=(0.7, 0.7, 0.7)),
+                                            medianprops=dict(marker='o', color='white', markersize=5)
+                                            )
+
+            averageBoxPlot.ax[xplot//2, xplot%2].set_xticks([1, 2], ['0-1s', '1-2s'])
+
+                # anova to determine if trial type is significant
+
+            # stats: ANOVA?
+            resp_anova = np.concatenate((ADT1_trialType[key], ADT2_trialType[key],
+                                         ADT1_Ctrl_trialType[key], ADT2_Ctrl_trialType[key],
+                                         JUV1_trialType[key], JUV2_trialType[key],
+                                         JUV1_Ctrl_trialType[key], JUV2_Ctrl_trialType[key]))
+            age_anova = ['ADT'] * len(ADT1_trialType[key]) * 4 + ['JUV'] * len(JUV1_trialType[key]) * 4
+            trial_anova = ['Expt'] * len(ADT1_trialType[key]) * 2 + ['Ctrl'] * len(ADT1_trialType[key]) * 2 + \
+                          ['Expt'] * len(JUV1_trialType[key]) * 2 + ['Ctrl'] * len(JUV1_trialType[key]) * 2
+            time_anova = ['0-1'] * len(ADT1_trialType[key]) + ['1-2'] * len(ADT1_trialType[key]) + \
+                         ['0-1'] * len(ADT1_trialType[key]) + ['1-2'] * len(ADT1_trialType[key]) + \
+                         ['0-1'] * len(JUV1_trialType[key]) + ['1-2'] * len(JUV1_trialType[key]) + \
+                         ['0-1'] * len(JUV1_trialType[key]) + ['1-2'] * len(JUV1_trialType[key])
+
+            anova_data = pd.DataFrame({'age': age_anova,
+                                       'trial': trial_anova,
+                                       'time': time_anova,
+                                       'response': resp_anova
+                                       })
+            model = ols('response ~ age + trial + time + age:trial + age:time + trial:time', anova_data).fit()
+            anova_table = sm.stats.anova_lm(model, typ=2)
+            print("Anova table for trial type: ", key)
+            print(anova_table)
+            anova_table.to_csv(os.path.join(saveFigPath, 'Ensemble with ' + str((nIdx+1)*10) + ' ANOVA_' + key + '.csv'))
+
+            stats, p1 = mannwhitneyu(ADT1_trialType[key], JUV1_trialType[key])  # print ANOVA table
+            stats, p2 = mannwhitneyu(ADT2_trialType[key], JUV2_trialType[key])
+            print('P value for ', key, ':', '0-1s', p1, ', 1-2s',p2)
+
+        resp_anova = resp
+        age_anova = age
+        trial_anova = trial
+        time_anova = time
+
+        anova_data = pd.DataFrame({'age': age_anova,
+                                   'trial': trial_anova,
+                                   'response': resp_anova
+                                   })
+        model = ols('response ~ C(age) * C(trial) ', anova_data).fit()
+        anova_table = sm.stats.anova_lm(model, typ=2)
+        print("Anova table for trial type to determine outcome effect: ")
+        print(anova_table)
+        anova_table.to_csv(
+            os.path.join(saveFigPath, 'Ensemble with ' + str((nIdx + 1) * 10) + 'outcome_ANOVA.csv'))
+
+        plt.savefig(os.path.join(saveFigPath, 'Average decoding accuracy trialType boxplot.png'),format='png')
+        plt.savefig(os.path.join(saveFigPath, 'Average decoding accuracy trialType boxplot.svg'), format='svg')
 
     def decoding_hardeasy_session(self,  n_predictors,cue_pairs):
+        #[3, 4, 5, 6], [1, 2, 7, 8], [1, 3, 6, 8], [2, 3, 6, 7], [1, 4, 5, 8], [2, 4, 5, 7]
         nFiles = self.data_df.shape[0]
         for f in tqdm(range(nFiles)):
             if self.data_df['with_imaging'][f]:
@@ -4552,7 +5633,7 @@ class fluoSum:
                                             'decoding')
                 if not os.path.exists(saveDataPath):
                     os.makedirs(saveDataPath)
-                saveDataFile = os.path.join(saveDataPath, 'decodingResult '+str(cue_pairs)+'.pickle')
+                saveDataFile = os.path.join(saveDataPath, 'decodingResult_ensembleSize '+str(cue_pairs)+'.pickle')
 
                 #if not os.path.exists(saveDataFile):
                 decodeVar = {}
@@ -4591,7 +5672,7 @@ class fluoSum:
         # read coefficient, sig cells, neurons with
         for f in tqdm(range(nFiles)):
             saveDataPath = os.path.join(group_adt.iloc[f]['fluo_analysis_dir'], 'decoding')
-            saveDataFile = os.path.join(saveDataPath, 'decodingResult '+str(cue_pairs)+'.pickle')
+            saveDataFile = os.path.join(saveDataPath, 'decodingResult_ensembleSize '+str(cue_pairs)+'.pickle')
             # load the pickle file
             with open(saveDataFile, 'rb') as file:
                 decodingResult = pickle.load(file)
@@ -4603,17 +5684,31 @@ class fluoSum:
                 decodingSummary_ADT = {}
                 for var in decodingVars:
                     decodingSummary_ADT[var] = {}
-                    decodingSummary_ADT[var]['accuracy'] = np.empty((len(regr_time),
-                                                    0))
-                    decodingSummary_ADT[var]['ctrl_accuracy'] = np.empty((len(regr_time),
-                                                    0))
+                    maxNeurons = 300
+                    nNeurons = np.arange(0, 300, 10)
+                    decodingSummary_ADT[var]['ensemble_accuracy0-1'] = np.full((len(nNeurons), nFiles), np.nan)
+                    decodingSummary_ADT[var]['ensemble_size'] = decodingResult['nNeurons']
+                    decodingSummary_ADT[var]['ensemble_ctrl0-1'] = np.full((len(nNeurons), nFiles), np.nan)
+                    decodingSummary_ADT[var]['ensemble_accuracy1-2'] = np.full((len(nNeurons), nFiles), np.nan)
+                    decodingSummary_ADT[var]['ensemble_ctrl1-2'] = np.full((len(nNeurons), nFiles), np.nan)
 
             for var in decodingVars:
             # calculate fraction of neurons that are significant
-                decodingSummary_ADT[var]['accuracy'] = np.concatenate((decodingSummary_ADT[var]['accuracy'],
-                                                        decodingResult[var]['accuracy'][:, np.newaxis]), 1)
-                decodingSummary_ADT[var]['ctrl_accuracy'] = np.concatenate((decodingSummary_ADT[var]['ctrl_accuracy'],
-                                                        decodingResult[var]['ctrl_accuracy'][:, np.newaxis]), 1)
+                timeMask1 = np.logical_and(regr_time >= 0, regr_time < 1)
+                timeMask2 = np.logical_and(regr_time >= 1, regr_time < 2)
+                ave_accuracy1 = np.nanmean(decodingResult['decode_realSize'][var]['accuracy'][timeMask1, :],
+                                      0)
+                ave_ctrl1 = np.nanmean(decodingResult['decode_realSize'][var]['ctrl_accuracy'][timeMask1, :],
+                                  0)
+                ave_accuracy2 = np.nanmean(decodingResult['decode_realSize'][var]['accuracy'][timeMask2, :],
+                                       0)
+                ave_ctrl2 = np.nanmean(decodingResult['decode_realSize'][var]['ctrl_accuracy'][timeMask2, :],
+                                   0)
+                decodingSummary_ADT[var]['ensemble_accuracy0-1'][:len(ave_accuracy1),f] = ave_accuracy1
+                decodingSummary_ADT[var]['ensemble_ctrl0-1'][:len(ave_ctrl1),f] = ave_ctrl1
+                decodingSummary_ADT[var]['ensemble_accuracy1-2'][:len(ave_accuracy2),f] = ave_accuracy2
+                decodingSummary_ADT[var]['ensemble_ctrl1-2'][:len(ave_ctrl2),f] = ave_ctrl2
+
                 #get the average decoding accuracy between 1-2 second after cue
 
 
@@ -4622,31 +5717,42 @@ class fluoSum:
         # read coefficient, sig cells, neurons with
         for f in tqdm(range(nFiles)):
             saveDataPath = os.path.join(group_juv.iloc[f]['fluo_analysis_dir'], 'decoding')
-            saveDataFile = os.path.join(saveDataPath, 'decodingResult '+str(cue_pairs)+'.pickle')
+            saveDataFile = os.path.join(saveDataPath, 'decodingResult_ensembleSize '+str(cue_pairs)+'.pickle')
             # load the pickle file
             with open(saveDataFile, 'rb') as file:
                 decodingResult = pickle.load(file)
 
             # initialize variables
-            if f==0:
-                decodingVars =['go', 'nogo']
+            if f == 0:
+                decodingVars = ['go', 'nogo']
                 regr_time = decodingResult['time']
                 decodingSummary_JUV = {}
+                maxNeurons = 300
+                nNeurons = np.arange(0, 300, 10)
                 for var in decodingVars:
                     decodingSummary_JUV[var] = {}
-                    decodingSummary_JUV[var]['accuracy'] = np.empty((len(regr_time),
-                                                    0))
-                    decodingSummary_JUV[var]['ctrl_accuracy'] = np.empty((len(regr_time),
-                                                    0))
-
+                    decodingSummary_JUV[var]['ensemble_accuracy0-1'] = np.full((len(nNeurons), nFiles), np.nan)
+                    decodingSummary_JUV[var]['ensemble_size'] = decodingResult['nNeurons']
+                    decodingSummary_JUV[var]['ensemble_ctrl0-1'] = np.full((len(nNeurons), nFiles), np.nan)
+                    decodingSummary_JUV[var]['ensemble_accuracy1-2'] = np.full((len(nNeurons), nFiles), np.nan)
+                    decodingSummary_JUV[var]['ensemble_ctrl1-2'] = np.full((len(nNeurons), nFiles), np.nan)
 
             for var in decodingVars:
-            # calculate fraction of neurons that are significant
-                decodingSummary_JUV[var]['accuracy'] = np.concatenate((decodingSummary_JUV[var]['accuracy'],
-                                                        decodingResult[var]['accuracy'][:, np.newaxis]), 1)
-                decodingSummary_JUV[var]['ctrl_accuracy'] = np.concatenate((decodingSummary_JUV[var]['ctrl_accuracy'],
-                                                        decodingResult[var]['ctrl_accuracy'][:, np.newaxis]), 1)
-
+                # calculate fraction of neurons that are significant
+                timeMask1 = np.logical_and(regr_time >= 0, regr_time < 1)
+                timeMask2 = np.logical_and(regr_time >= 1, regr_time < 2)
+                ave_accuracy1 = np.nanmean(decodingResult['decode_realSize'][var]['accuracy'][timeMask1, :],
+                                           0)
+                ave_ctrl1 = np.nanmean(decodingResult['decode_realSize'][var]['ctrl_accuracy'][timeMask1, :],
+                                       0)
+                ave_accuracy2 = np.nanmean(decodingResult['decode_realSize'][var]['accuracy'][timeMask2, :],
+                                           0)
+                ave_ctrl2 = np.nanmean(decodingResult['decode_realSize'][var]['ctrl_accuracy'][timeMask2, :],
+                                       0)
+                decodingSummary_JUV[var]['ensemble_accuracy0-1'][:len(ave_accuracy1), f] = ave_accuracy1
+                decodingSummary_JUV[var]['ensemble_ctrl0-1'][:len(ave_ctrl1), f] = ave_ctrl1
+                decodingSummary_JUV[var]['ensemble_accuracy1-2'][:len(ave_accuracy2), f] = ave_accuracy2
+                decodingSummary_JUV[var]['ensemble_ctrl1-2'][:len(ave_ctrl2), f] = ave_ctrl2
 
         # plot the summary results
         savefigpath = os.path.join(self.root_dir, self.summary_dir, 'fluo')
@@ -4663,78 +5769,245 @@ class fluoSum:
         varList = decodingSummary_ADT.keys()
 
         """ plot average decoding and by trial types"""
-        decodingPlot = StartSubplots(1, 2, ifSharey=True)
-        decodingPlot.fig.suptitle('Average decoding accuracy for ' + group_label)
-        for idx,var in enumerate(varList):
-            plt.ylim((0.4, 0.65))
-
-                ## plot ADT animals
-            decodingPlot.ax[idx].set_title(var)
-
-            tempBoot = bootstrap(decodingSummary_ADT[var]['accuracy'], 1, 1000)
-
-            tempCtrlBoot = bootstrap(decodingSummary_ADT[var]['ctrl_accuracy'], 1, 1000)
-
-                # plot data and ctrl
-            plotIdx = np.logical_and(regr_time > -2, regr_time < 2)
-            decodingPlot.ax[idx].plot(regr_time[plotIdx], tempBoot['bootAve'][plotIdx],
-                                                            c=adtColor)
-            decodingPlot.ax[idx].fill_between(regr_time[plotIdx], tempBoot['bootLow'][plotIdx],
-                                                                    tempBoot['bootHigh'][plotIdx],
-                                                                    alpha=0.2, color=adtColor)
-
-            decodingPlot.ax[idx].plot(regr_time[plotIdx], tempCtrlBoot['bootAve'][plotIdx],
-                                                        alpha=0.5,c=adtColor)
-            decodingPlot.ax[idx].fill_between(regr_time[plotIdx], tempCtrlBoot['bootLow'][plotIdx],
-                                                                tempCtrlBoot['bootHigh'][plotIdx],
-                                                                alpha=0.2, color=(0.7, 0.7, 0.7))
-
-                # plot JUV
-            tempBoot = bootstrap(decodingSummary_JUV[var]['accuracy'], 1, 1000)
-
-            tempCtrlBoot = bootstrap(decodingSummary_JUV[var]['ctrl_accuracy'], 1, 1000)
-
-            plotIdx = np.logical_and(regr_time > -2, regr_time < 2)
-            decodingPlot.ax[idx].plot(regr_time[plotIdx], tempBoot['bootAve'][plotIdx],
-                                                        c=juvColor)
-            decodingPlot.ax[idx].fill_between(regr_time[plotIdx], tempBoot['bootLow'][plotIdx],
-                                                                tempBoot['bootHigh'][plotIdx],
-                                                                alpha=0.2, color=juvColor)
-
-            decodingPlot.ax[idx].plot(regr_time[plotIdx], tempCtrlBoot['bootAve'][plotIdx],
-                                                        c=juvColor, alpha = 0.5)
-            decodingPlot.ax[idx].fill_between(regr_time[plotIdx], tempCtrlBoot['bootLow'][plotIdx],
-                                                                tempCtrlBoot['bootHigh'][plotIdx],
-                                                                alpha=0.2, color=(0.7, 0.7, 0.7))
-            p_list = []
-            dt = np.mean(np.diff(regr_time))
-            for tt in range(len(regr_time)):
-                statistic, p_MWtest = wilcoxon(decodingSummary_JUV[var]['accuracy'][tt, :],
-                                                   decodingSummary_JUV[var]['ctrl_accuracy'][tt, :])
-                p_list.append(p_MWtest)
-            q_values = multipletests(p_list, method='fdr_bh')[1]
-            # Set your desired FDR level (e.g., 0.05)
-            FDR_threshold = 0.05
-
-            # Identify significant results
-            significant_results = [p < FDR_threshold for p in q_values]
-            for tt in range(len(regr_time)):
-                if significant_results[tt]:
-                    decodingPlot.ax[idx ].plot(regr_time[tt] + dt * np.array([-0.5, 0.5]),
-                                                            [0.6, 0.6], color=(139 / 255, 137 / 255, 184 / 255),
-                                                            linewidth=5)
-
-        decodingPlot.save_plot('Decoding accuracy for variable ' + group_label + '.tif',
-                                   'tiff', savefigpath)
-        decodingPlot.save_plot('Decoding accuracy for variable ' + group_label + '.svg',
-                                   'svg', savefigpath)
-        plt.close()
+        # decodingPlot = StartSubplots(1, 2, ifSharey=True)
+        # decodingPlot.fig.suptitle('Average decoding accuracy for ' + group_label)
+        # for idx,var in enumerate(varList):
+        #     plt.ylim((0.4, 0.65))
+        #
+        #         ## plot ADT animals
+        #     decodingPlot.ax[idx].set_title(var)
+        #
+        #     tempBoot = bootstrap(decodingSummary_ADT[var]['accuracy'], 1, 1000)
+        #
+        #     tempCtrlBoot = bootstrap(decodingSummary_ADT[var]['ctrl_accuracy'], 1, 1000)
+        #
+        #         # plot data and ctrl
+        #     plotIdx = np.logical_and(regr_time > -2, regr_time < 2)
+        #     decodingPlot.ax[idx].plot(regr_time[plotIdx], tempBoot['bootAve'][plotIdx],
+        #                                                     c=adtColor)
+        #     decodingPlot.ax[idx].fill_between(regr_time[plotIdx], tempBoot['bootLow'][plotIdx],
+        #                                                             tempBoot['bootHigh'][plotIdx],
+        #                                                             alpha=0.2, color=adtColor)
+        #
+        #     decodingPlot.ax[idx].plot(regr_time[plotIdx], tempCtrlBoot['bootAve'][plotIdx],
+        #                                                 alpha=0.5,c=adtColor)
+        #     decodingPlot.ax[idx].fill_between(regr_time[plotIdx], tempCtrlBoot['bootLow'][plotIdx],
+        #                                                         tempCtrlBoot['bootHigh'][plotIdx],
+        #                                                         alpha=0.2, color=(0.7, 0.7, 0.7))
+        #
+        #         # plot JUV
+        #     tempBoot = bootstrap(decodingSummary_JUV[var]['accuracy'], 1, 1000)
+        #
+        #     tempCtrlBoot = bootstrap(decodingSummary_JUV[var]['ctrl_accuracy'], 1, 1000)
+        #
+        #     plotIdx = np.logical_and(regr_time > -2, regr_time < 2)
+        #     decodingPlot.ax[idx].plot(regr_time[plotIdx], tempBoot['bootAve'][plotIdx],
+        #                                                 c=juvColor)
+        #     decodingPlot.ax[idx].fill_between(regr_time[plotIdx], tempBoot['bootLow'][plotIdx],
+        #                                                         tempBoot['bootHigh'][plotIdx],
+        #                                                         alpha=0.2, color=juvColor)
+        #
+        #     decodingPlot.ax[idx].plot(regr_time[plotIdx], tempCtrlBoot['bootAve'][plotIdx],
+        #                                                 c=juvColor, alpha = 0.5)
+        #     decodingPlot.ax[idx].fill_between(regr_time[plotIdx], tempCtrlBoot['bootLow'][plotIdx],
+        #                                                         tempCtrlBoot['bootHigh'][plotIdx],
+        #                                                         alpha=0.2, color=(0.7, 0.7, 0.7))
+        #     p_list = []
+        #     dt = np.mean(np.diff(regr_time))
+        #     for tt in range(len(regr_time)):
+        #         statistic, p_MWtest = wilcoxon(decodingSummary_JUV[var]['accuracy'][tt, :],
+        #                                            decodingSummary_JUV[var]['ctrl_accuracy'][tt, :])
+        #         p_list.append(p_MWtest)
+        #     q_values = multipletests(p_list, method='fdr_bh')[1]
+        #     # Set your desired FDR level (e.g., 0.05)
+        #     FDR_threshold = 0.05
+        #
+        #     # Identify significant results
+        #     significant_results = [p < FDR_threshold for p in q_values]
+        #     for tt in range(len(regr_time)):
+        #         if significant_results[tt]:
+        #             decodingPlot.ax[idx ].plot(regr_time[tt] + dt * np.array([-0.5, 0.5]),
+        #                                                     [0.6, 0.6], color=(139 / 255, 137 / 255, 184 / 255),
+        #                                                     linewidth=5)
+        #
+        # decodingPlot.save_plot('Decoding accuracy for variable ' + group_label + '.tif',
+        #                            'tiff', savefigpath)
+        # decodingPlot.save_plot('Decoding accuracy for variable ' + group_label + '.svg',
+        #                            'svg', savefigpath)
+        # plt.close()
 
         # calculate average decoding accuracy between 1 - 2 seconds
-        timeMask = np.logical_and(regr_time>=1,regr_time<2)
-        ave_JUV = np.nanmean(decodingSummary_JUV['nogo']['accuracy'][timeMask, :], axis=0)
-        ave_JUV_ctrl = np.nanmean(decodingSummary_JUV['nogo']['ctrl_accuracy'][timeMask, :], axis=0)
-        ave_ADT = np.nanmean(decodingSummary_ADT['nogo']['accuracy'][timeMask, :], axis=0)
+        nNeurons = 80
+        nIdx = 7
+        JUV1_nogo = decodingSummary_JUV['nogo']['ensemble_accuracy0-1'][nIdx, :]
+        JUV1_nogo = [jj for jj in JUV1_nogo if not np.isnan(jj)]
+        JUV1_nogo_Ctrl = decodingSummary_JUV['nogo']['ensemble_ctrl0-1'][nIdx, :]
+        JUV1_nogo_Ctrl = [jj for jj in JUV1_nogo_Ctrl if not np.isnan(jj)]
+        ADT1_nogo = decodingSummary_ADT['nogo']['ensemble_accuracy0-1'][nIdx, :]
+        ADT1_nogo = [jj for jj in ADT1_nogo if not np.isnan(jj)]
+        ADT1_nogo_Ctrl = decodingSummary_ADT['nogo']['ensemble_ctrl0-1'][nIdx, :]
+        ADT1_nogo_Ctrl = [jj for jj in ADT1_nogo_Ctrl if not np.isnan(jj)]
+
+        JUV2_nogo = decodingSummary_JUV['nogo']['ensemble_accuracy1-2'][nIdx, :]
+        JUV2_nogo = [jj for jj in JUV2_nogo if not np.isnan(jj)]
+        JUV2_nogo_Ctrl = decodingSummary_JUV['nogo']['ensemble_ctrl1-2'][nIdx, :]
+        JUV2_nogo_Ctrl = [jj for jj in JUV2_nogo_Ctrl if not np.isnan(jj)]
+        ADT2_nogo = decodingSummary_ADT['nogo']['ensemble_accuracy1-2'][nIdx, :]
+        ADT2_nogo = [jj for jj in ADT2_nogo if not np.isnan(jj)]
+        ADT2_nogo_Ctrl = decodingSummary_ADT['nogo']['ensemble_ctrl1-2'][nIdx, :]
+        ADT2_nogo_Ctrl = [jj for jj in ADT2_nogo_Ctrl if not np.isnan(jj)]
+
+        # box plot on 0-1 and 1-2 seconds
+        x = np.array([1,2])
+        averageBoxPlot = StartPlots()
+        averageBoxPlot.ax.set_title('Decoding Accuracy and Control by Age Group-nogo, 80 cells' + str(cue_pairs))
+        averageBoxPlot.ax.set_ylim([0.45,1])
+        boxplot = averageBoxPlot.ax.boxplot([ADT1_nogo, ADT2_nogo],
+                                            positions= x - 0.3,widths=0.2,patch_artist=True, showfliers=False,
+                                            boxprops=dict(facecolor=adtColor, edgecolor=adtColor),
+                                            whiskerprops=dict(color=adtColor),
+                                            capprops=dict(color=adtColor),
+                                            medianprops=dict(marker='o', color='white', markersize=5))
+
+        boxplot =averageBoxPlot.ax.boxplot([ADT1_nogo_Ctrl,ADT2_nogo_Ctrl],
+                                           positions=x - 0.1, widths=0.2,patch_artist=True, showfliers=False,
+                                           boxprops=dict(facecolor=(0.7, 0.7, 0.7), edgecolor=(0.7, 0.7, 0.7)),
+                                            whiskerprops=dict(color=(0.7, 0.7, 0.7)),
+                                            capprops=dict(color=(0.7, 0.7, 0.7)),
+                                            medianprops=dict(marker='o', color='white', markersize=5))
+
+        averageBoxPlot.ax.set_xticks(x, ['0-1s', '1-2s'])
+
+        # plot JUV
+        # plot data and ctrl
+        boxplot = averageBoxPlot.ax.boxplot([JUV1_nogo, JUV2_nogo],
+                                            positions=x + 0.1,widths=0.2,patch_artist=True, showfliers=False,
+                                            boxprops=dict(facecolor=juvColor, edgecolor=juvColor),
+                                            whiskerprops=dict(color=juvColor),
+                                            capprops=dict(color=juvColor),
+                                            medianprops=dict(marker='o', color='white', markersize=5))
+
+        boxplot = averageBoxPlot.ax.boxplot([JUV1_nogo_Ctrl, JUV2_nogo_Ctrl],
+                                            positions=x + 0.3,widths=0.2, patch_artist=True, showfliers=False,
+                                            boxprops=dict(facecolor=(0.7, 0.7, 0.7), edgecolor=(0.7, 0.7, 0.7)),
+                                            whiskerprops=dict(color=(0.7, 0.7, 0.7)),
+                                            capprops=dict(color=(0.7, 0.7, 0.7)),
+                                            medianprops=dict(marker='o', color='white', markersize=5)
+                                            )
+
+        averageBoxPlot.ax.set_xticks([1, 2], ['0-1s', '1-2s'])
+        averageBoxPlot.ax.set_ylim([0.4, 0.7])
+
+        averageBoxPlot.save_plot(str(cue_pairs) + 'nogo.png', 'png',savefigpath)
+        averageBoxPlot.save_plot(str(cue_pairs) + 'nogo.svg', 'svg', savefigpath)
+        # stats
+
+        # data = {
+        #     'Group': ['ADT1', 'ADT2', 'JUV1', 'JUV2'],
+        #     'p-value': p_list,
+        #     'adjusted p-value': q_list
+        # }
+        # dataDF = pd.DataFrame(data)
+        # dataDF.to_csv(os.path.join(savefigpath, str(cue_pairs) + 'nogo.csv'))
+
+        JUV1_go = decodingSummary_JUV['go']['ensemble_accuracy0-1'][nIdx, :]
+        JUV1_go = [jj for jj in JUV1_go if not np.isnan(jj)]
+        JUV1_go_Ctrl = decodingSummary_JUV['go']['ensemble_ctrl0-1'][nIdx, :]
+        JUV1_go_Ctrl = [jj for jj in JUV1_go_Ctrl if not np.isnan(jj)]
+        ADT1_go = decodingSummary_ADT['go']['ensemble_accuracy0-1'][nIdx, :]
+        ADT1_go = [jj for jj in ADT1_go if not np.isnan(jj)]
+        ADT1_go_Ctrl = decodingSummary_ADT['go']['ensemble_ctrl0-1'][nIdx, :]
+        ADT1_go_Ctrl = [jj for jj in ADT1_go_Ctrl if not np.isnan(jj)]
+
+        JUV2_go = decodingSummary_JUV['go']['ensemble_accuracy1-2'][nIdx, :]
+        JUV2_go = [jj for jj in JUV2_go if not np.isnan(jj)]
+        JUV2_go_Ctrl = decodingSummary_JUV['go']['ensemble_ctrl1-2'][nIdx, :]
+        JUV2_go_Ctrl = [jj for jj in JUV2_go_Ctrl if not np.isnan(jj)]
+        ADT2_go = decodingSummary_ADT['go']['ensemble_accuracy1-2'][nIdx, :]
+        ADT2_go = [jj for jj in ADT2_go if not np.isnan(jj)]
+        ADT2_go_Ctrl = decodingSummary_ADT['go']['ensemble_ctrl1-2'][nIdx, :]
+        ADT2_go_Ctrl = [jj for jj in ADT2_go_Ctrl if not np.isnan(jj)]
+
+        # box plot on 0-1 and 1-2 seconds
+        x = np.array([1,2])
+        averageBoxPlot = StartPlots()
+        averageBoxPlot.ax.set_title('Decoding Accuracy and Control by Age Group-go, 80 cells' + str(cue_pairs))
+        averageBoxPlot.ax.set_ylim([0.45,1])
+        boxplot = averageBoxPlot.ax.boxplot([ADT1_go, ADT2_go],
+                                            positions= x - 0.3,widths=0.2,patch_artist=True, showfliers=False,
+                                            boxprops=dict(facecolor=adtColor, edgecolor=adtColor),
+                                            whiskerprops=dict(color=adtColor),
+                                            capprops=dict(color=adtColor),
+                                            medianprops=dict(marker='o', color='white', markersize=5))
+
+        boxplot =averageBoxPlot.ax.boxplot([ADT1_go_Ctrl,ADT2_go_Ctrl],
+                                           positions=x - 0.1, widths=0.2,patch_artist=True, showfliers=False,
+                                           boxprops=dict(facecolor=(0.7, 0.7, 0.7), edgecolor=(0.7, 0.7, 0.7)),
+                                            whiskerprops=dict(color=(0.7, 0.7, 0.7)),
+                                            capprops=dict(color=(0.7, 0.7, 0.7)),
+                                            medianprops=dict(marker='o', color='white', markersize=5))
+
+        averageBoxPlot.ax.set_xticks(x, ['0-1s', '1-2s'])
+
+        # plot JUV
+        # plot data and ctrl
+        boxplot = averageBoxPlot.ax.boxplot([JUV1_go, JUV2_go],
+                                            positions=x + 0.1,widths=0.2,patch_artist=True, showfliers=False,
+                                            boxprops=dict(facecolor=juvColor, edgecolor=juvColor),
+                                            whiskerprops=dict(color=juvColor),
+                                            capprops=dict(color=juvColor),
+                                            medianprops=dict(marker='o', color='white', markersize=5))
+
+        boxplot = averageBoxPlot.ax.boxplot([JUV1_go_Ctrl, JUV2_go_Ctrl],
+                                            positions=x + 0.3,widths=0.2, patch_artist=True, showfliers=False,
+                                            boxprops=dict(facecolor=(0.7, 0.7, 0.7), edgecolor=(0.7, 0.7, 0.7)),
+                                            whiskerprops=dict(color=(0.7, 0.7, 0.7)),
+                                            capprops=dict(color=(0.7, 0.7, 0.7)),
+                                            medianprops=dict(marker='o', color='white', markersize=5)
+                                            )
+
+        averageBoxPlot.ax.set_xticks([1, 2], ['0-1s', '1-2s'])
+        averageBoxPlot.ax.set_ylim([0.4, 0.7])
+
+        averageBoxPlot.save_plot(str(cue_pairs) + 'go.png', 'png',savefigpath)
+        averageBoxPlot.save_plot(str(cue_pairs) + 'go.svg', 'svg', savefigpath)
+        # stats
+        stats, p_ADT2_nogo = wilcoxon(ADT2_nogo, ADT2_nogo_Ctrl)
+        stats, p_ADT2_go = wilcoxon(ADT2_go, ADT2_go_Ctrl)
+        stats, p_JUV2_nogo = wilcoxon(JUV2_nogo, JUV2_nogo_Ctrl)
+        stats, p_JUV2_go = wilcoxon(JUV2_go, JUV2_go_Ctrl)
+        p_list = np.array([p_ADT2_nogo, p_ADT2_go, p_JUV2_nogo, p_JUV2_go])
+        q_list = multipletests(p_list, method='fdr_bh')[1]
+        print(q_list)
+
+        print("Median of ADT go 1-2s:", np.median(ADT2_go))
+        print("MAD of ADT go 1-2s:", median_abs_deviation(ADT2_go))
+        print("Median of JUV go 1-2s:", np.median(JUV2_go))
+        print("MAD of JUV go 1-2s:", median_abs_deviation(JUV2_go))
+
+        print("Median of ADT go ctrl 1-2s:", np.median(ADT2_go_Ctrl))
+        print("MAD of ADT go ctrl 1-2s:", median_abs_deviation(ADT2_go_Ctrl))
+        print("Median of JUV go ctrl 1-2s:", np.median(JUV2_go_Ctrl))
+        print("MAD of JUV go ctrl 1-2s:", median_abs_deviation(JUV2_go_Ctrl))
+
+        print("Median of ADT nogo 1-2s:", np.median(ADT2_nogo))
+        print("MAD of ADT nogo 1-2s:", median_abs_deviation(ADT2_nogo))
+        print("Median of JUV nogo 1-2s:", np.median(JUV2_nogo))
+        print("MAD of JUV nogo 1-2s:", median_abs_deviation(JUV2_nogo))
+
+        print("Median of ADT nogo ctrl 1-2s:", np.median(ADT2_nogo_Ctrl))
+        print("MAD of ADT nogo ctrl 1-2s:", median_abs_deviation(ADT2_nogo_Ctrl))
+        print("Median of JUV nogo ctrl 1-2s:", np.median(JUV2_nogo_Ctrl))
+        print("MAD of JUV nogo ctrl 1-2s:", median_abs_deviation(JUV2_nogo_Ctrl))
+
+        data = {
+            'Group': ['ADT1', 'ADT2', 'JUV1', 'JUV2'],
+            'p-value': p_list,
+            'adjusted p-value': q_list
+        }
+        dataDF = pd.DataFrame(data)
+        dataDF.to_csv(os.path.join(savefigpath, str(cue_pairs) + 'go.csv'))
+
     def dpca_session(self):
         # clean up the plot function
         nFiles = self.data_df.shape[0]
@@ -5243,12 +6516,13 @@ class fluoSum:
         outcomeTypes = ['correct','incorrect']
 
         nFiles = group_adt.shape[0]
-
+        subject_ADT = []
         for f in tqdm(range(nFiles)):
             analysis = group_adt.iloc[f]['fluo_analysis']
             saveDataPath = os.path.join(group_adt.iloc[f]['fluo_analysis_dir'],
                                             'noise')
             saveDataFile = os.path.join(saveDataPath, 'noiseResults_Valente_2021.pickle')
+            subject_ADT.append(group_adt.iloc[f]['subject'])
             with open(saveDataFile, 'rb') as file:
                     noiseResult = pickle.load(file)
 
@@ -5313,12 +6587,13 @@ class fluoSum:
 
         # load JUV data
         nFiles = group_juv.shape[0]
-
+        subject_JUV = []
         for f in tqdm(range(nFiles)):
             analysis = group_juv.iloc[f]['fluo_analysis']
             saveDataPath = os.path.join(group_juv.iloc[f]['fluo_analysis_dir'],
                                             'noise')
             saveDataFile = os.path.join(saveDataPath, 'noiseResults_Valente_2021.pickle')
+            subject_JUV.append(group_juv.iloc[f]['subject'])
             with open(saveDataFile, 'rb') as file:
                     noiseResult = pickle.load(file)
             if f==0:
@@ -5450,6 +6725,121 @@ class fluoSum:
                                savefigpath)
         plt.close()
 
+        saveData = {}
+
+        # pairwise correlation in boxplot for 0-1 and 1-2 seconds
+        timeMask1 = np.logical_and(plotTime>=0, plotTime<1)
+        timeMask2 = np.logical_and(plotTime>=1, plotTime<2)
+
+        JUV1_correct = np.nanmean((pwXneuronCorr_JUV['Hit'][timeMask1,:] + pwXneuronCorr_JUV['CorRej'][timeMask1,:])/2,0)
+        JUV1_incorrect = np.nanmean(pwXneuronCorr_JUV['FA'][timeMask1,:],0)
+        JUV1_correct = JUV1_correct[~np.isnan(JUV1_correct)]
+        JUV1_incorrect = JUV1_incorrect[~np.isnan(JUV1_incorrect)]
+
+        ADT1_correct = np.nanmean((pwXneuronCorr_ADT['Hit'][timeMask1,:] + pwXneuronCorr_ADT['CorRej'][timeMask1,:])/2,0)
+        ADT1_incorrect = np.nanmean(pwXneuronCorr_ADT['FA'][timeMask1,:],0)
+
+        JUV2_correct = np.nanmean((pwXneuronCorr_JUV['Hit'][timeMask2,:] + pwXneuronCorr_JUV['CorRej'][timeMask2,:])/2,0)
+        JUV2_incorrect = np.nanmean(pwXneuronCorr_JUV['FA'][timeMask2,:],0)
+        # remove nan
+        JUV2_correct = JUV2_correct[~np.isnan(JUV2_correct)]
+        JUV2_incorrect = JUV2_incorrect[~np.isnan(JUV2_incorrect)]
+
+        ADT2_correct = np.nanmean((pwXneuronCorr_ADT['Hit'][timeMask2,:] + pwXneuronCorr_ADT['CorRej'][timeMask2,:])/2,0)
+        ADT2_incorrect = np.nanmean(pwXneuronCorr_ADT['FA'][timeMask2,:],0)
+
+        print()
+        saveData['pwCorr'] = {'ADT1_correct':ADT1_correct, 'ADT1_incorrect':ADT1_incorrect,
+                              'ADT2_correct':ADT2_correct, 'ADT2_incorrect':ADT2_incorrect,
+                              'JUV1_correct':JUV1_correct, 'JUV1_incorrect':JUV1_incorrect,
+                              'JUV2_correct':JUV2_correct, 'JUV2_incorrect':JUV2_incorrect}
+
+        print("Mean of pairwise noise correlation ADT correct 1-2s:", np.mean(ADT2_correct))
+        print("SEM of pairwise noise correlation ADT correct 1-2s:", np.std(ADT2_correct)/np.sqrt(len(ADT2_correct)))
+        print("Mean of pairwise noise correlation JUV correct 1-2s:", np.mean(JUV2_correct))
+        print("SEM of pairwise noise correlation JUV correct 1-2s:", np.std(JUV2_correct)/np.sqrt(len(JUV2_correct)))
+
+        print("Mean of pairwise noise correlation ADT incorrect 1-2s:", np.mean(ADT2_incorrect))
+        print("SEM of pairwise noise correlation ADT incorrect 1-2s:", np.std(ADT2_incorrect)/np.sqrt(len(ADT2_incorrect)))
+        print("Mean of pairwise noise correlation JUV incorrect 1-2s:", np.mean(JUV2_incorrect))
+        print("SEM of pairwise noise correlation JUV incorrect 1-2s:", np.std(JUV2_incorrect)/np.sqrt(len(JUV2_incorrect)))
+
+        # box plot on 0-1 and 1-2 seconds
+        x = np.array([1,2])
+        averageBoxPlot = StartPlots()
+        averageBoxPlot.ax.set_title('Pairwise noise correlation 1-2 s')
+        averageBoxPlot.ax.set_ylim([0,0.06])
+        boxplot = averageBoxPlot.ax.boxplot([ADT2_correct, ADT2_incorrect],
+                                            positions= x - 0.1,widths=0.2,patch_artist=True, showfliers=False,
+                                            boxprops=dict(facecolor=adtColor, edgecolor=adtColor),
+                                            whiskerprops=dict(color=adtColor),
+                                            capprops=dict(color=adtColor),
+                                            medianprops=dict(marker='o', color='white', markersize=5))
+
+        boxplot =averageBoxPlot.ax.boxplot([JUV2_correct,JUV2_incorrect],
+                                           positions=x + 0.1, widths=0.2,patch_artist=True, showfliers=False,
+                                           boxprops=dict(facecolor=juvColor, edgecolor=juvColor),
+                                            whiskerprops=dict(color=juvColor),
+                                            capprops=dict(color=juvColor),
+                                            medianprops=dict(marker='o', color='white', markersize=5))
+        averageBoxPlot.ax.set_xticks([1, 2], ['Correct', 'Incorrect'])
+
+        averageBoxPlot.save_plot('Average pairwise noise correlation1-2.png', 'png',savefigpath)
+        averageBoxPlot.save_plot('Average pairwise noise correlation1-2.svg', 'svg', savefigpath)
+
+        # plot JUV
+        # plot data and ctrl
+        averageBoxPlot = StartPlots()
+        averageBoxPlot.ax.set_title('Pairwise noise correlation 0-1s')
+        averageBoxPlot.ax.set_ylim([0,0.06])
+        boxplot = averageBoxPlot.ax.boxplot([ADT1_correct, ADT1_incorrect],
+                                            positions=x - 0.1,widths=0.2,patch_artist=True, showfliers=False,
+                                            boxprops=dict(facecolor=adtColor, edgecolor=adtColor),
+                                            whiskerprops=dict(color=adtColor),
+                                            capprops=dict(color=adtColor),
+                                            medianprops=dict(marker='o', color='white', markersize=5))
+
+        boxplot = averageBoxPlot.ax.boxplot([JUV1_correct, JUV1_incorrect],
+                                            positions=x + 0.1,widths=0.2, patch_artist=True, showfliers=False,
+                                            boxprops=dict(facecolor=juvColor, edgecolor=juvColor),
+                                            whiskerprops=dict(color=juvColor),
+                                            capprops=dict(color=juvColor),
+                                            medianprops=dict(marker='o', color='white', markersize=5)
+                                            )
+
+        averageBoxPlot.ax.set_xticks([1, 2], ['Correct', 'Incorrect'])
+
+        averageBoxPlot.save_plot('Average pairwise noise correlation0-1.png', 'png',savefigpath)
+        averageBoxPlot.save_plot('Average pairwise noise correlation0-1.svg', 'svg', savefigpath)
+
+        # anova
+                # loop through every group
+        resp_anova = np.concatenate((ADT1_correct, ADT1_incorrect, ADT2_correct, ADT2_incorrect,
+                                    JUV1_correct, JUV1_incorrect, JUV2_correct, JUV2_incorrect))
+        age_anova = ['ADT']*len(ADT1_correct)*4 + ['JUV']*len(JUV1_correct)*4
+        trial_anova = ['correct']*len(ADT1_correct) + ['incorrect']*len(ADT1_incorrect) +\
+                    ['correct']*len(ADT2_correct) + ['incorrect']*len(ADT2_incorrect) +\
+                    ['correct']*len(JUV1_correct) + ['incorrect']*len(JUV1_incorrect) +\
+                    ['correct']*len(JUV2_correct) + ['incorrect']*len(JUV2_incorrect)
+        time_anova = ['0-1']*len(ADT1_correct)*2+['1-2']*len(ADT2_correct)*2 + \
+                    ['0-1']*len(JUV1_correct)*2+['1-2']*len(JUV2_correct)*2
+
+        anova_data = pd.DataFrame({'age':age_anova,
+                                           'trial': trial_anova,
+                                           'time': time_anova,
+                                   'response': resp_anova
+                                           })
+        model = ols('response ~ age + trial + time', anova_data).fit()
+        anova_table = sm.stats.anova_lm(model, typ=2)
+        anova_table.to_csv(os.path.join(savefigpath, 'pairwise_noise_correaltion_anova.csv'))
+
+        stats,p1_correct = mannwhitneyu(JUV1_correct,ADT1_correct)        # print ANOVA table
+        stats,p1_incorrect = mannwhitneyu(JUV1_incorrect,ADT1_incorrect)
+        stats, p2_correct = mannwhitneyu(JUV2_correct,ADT2_correct)
+        stats, p2_incorrect =  mannwhitneyu(JUV2_incorrect,ADT2_incorrect)
+
+        # average pairwise correlation
+
         ## population level noise correlation
         popStatsPlot = StartSubplots(2, 2)
         popStatsPlot.fig.suptitle('Population Correlation')
@@ -5473,6 +6863,119 @@ class fluoSum:
                                savefigpath)
         plt.close()
 
+        JUV1_correct = np.nanmean((popXneuronCorr_JUV['Hit'][timeMask1,:] + popXneuronCorr_JUV['CorRej'][timeMask1,:])/2,0)
+        JUV1_incorrect = np.nanmean(popXneuronCorr_JUV['FA'][timeMask1,:],0)
+        JUV1_correct = JUV1_correct[~np.isnan(JUV1_correct)]
+        JUV1_incorrect = JUV1_incorrect[~np.isnan(JUV1_incorrect)]
+
+        ADT1_correct = np.nanmean((popXneuronCorr_ADT['Hit'][timeMask1,:] + popXneuronCorr_ADT['CorRej'][timeMask1,:])/2,0)
+        ADT1_incorrect = np.nanmean(popXneuronCorr_ADT['FA'][timeMask1,:],0)
+
+        JUV2_correct = np.nanmean((popXneuronCorr_JUV['Hit'][timeMask2,:] + popXneuronCorr_JUV['CorRej'][timeMask2,:])/2,0)
+        JUV2_incorrect = np.nanmean(popXneuronCorr_JUV['FA'][timeMask2,:],0)
+        JUV2_correct = JUV2_correct[~np.isnan(JUV2_correct)]
+        JUV2_incorrect = JUV2_incorrect[~np.isnan(JUV2_incorrect)]
+
+        ADT2_correct = np.nanmean((popXneuronCorr_ADT['Hit'][timeMask2,:] + popXneuronCorr_ADT['CorRej'][timeMask2,:])/2,0)
+        ADT2_incorrect = np.nanmean(popXneuronCorr_ADT['FA'][timeMask2,:],0)
+
+        print("Mean of population noise correlation ADT correct 1-2s:", np.mean(ADT2_correct))
+        print("SEM of population noise correlation ADT correct 1-2s:", np.std(ADT2_correct)/np.sqrt(len(ADT2_correct)))
+        print("Mean of population noise correlation ADT incorrect 1-2s:", np.mean(ADT2_incorrect))
+        print("SEM of population noise correlation ADT incorrect 1-2s:", np.std(ADT2_incorrect)/np.sqrt(len(ADT2_incorrect)))
+
+        print("Mean of population noise correlation JUV correct 1-2s:", np.mean(JUV2_correct))
+        print("SEM of population noise correlation JUV correct 1-2s:", np.std(JUV2_correct)/np.sqrt(len(JUV2_correct)))
+        print("Mean of population noise correlation JUV incorrect 1-2s:", np.mean(JUV2_incorrect))
+        print("SEM of population noise correlation JUV incorrect 1-2s:", np.std(JUV2_incorrect)/np.sqrt(len(JUV2_incorrect)))
+
+        saveData['popCorr'] = {'ADT1_correct':ADT1_correct, 'ADT1_incorrect':ADT1_incorrect,
+                              'ADT2_correct':ADT2_correct, 'ADT2_incorrect':ADT2_incorrect,
+                              'JUV1_correct':JUV1_correct, 'JUV1_incorrect':JUV1_incorrect,
+                              'JUV2_correct':JUV2_correct, 'JUV2_incorrect':JUV2_incorrect}
+        # box plot on 0-1 and 1-2 seconds
+        x = np.array([1,2])
+        averageBoxPlot = StartPlots()
+        averageBoxPlot.ax.set_title('Population noise correlation 1-2 s')
+        averageBoxPlot.ax.set_ylim([0.1,0.6])
+        boxplot = averageBoxPlot.ax.boxplot([ADT2_correct, ADT2_incorrect],
+                                            positions= x - 0.1,widths=0.2,patch_artist=True, showfliers=False,
+                                            boxprops=dict(facecolor=adtColor, edgecolor=adtColor),
+                                            whiskerprops=dict(color=adtColor),
+                                            capprops=dict(color=adtColor),
+                                            medianprops=dict(marker='o', color='white', markersize=5))
+
+        boxplot =averageBoxPlot.ax.boxplot([JUV2_correct,JUV2_incorrect],
+                                           positions=x + 0.1, widths=0.2,patch_artist=True, showfliers=False,
+                                           boxprops=dict(facecolor=juvColor, edgecolor=juvColor),
+                                            whiskerprops=dict(color=juvColor),
+                                            capprops=dict(color=juvColor),
+                                            medianprops=dict(marker='o', color='white', markersize=5))
+        averageBoxPlot.ax.set_xticks([1, 2], ['Correct', 'Incorrect'])
+
+        averageBoxPlot.save_plot('Average population noise correlation1-2.png', 'png',savefigpath)
+        averageBoxPlot.save_plot('Average population noise correlation1-2.svg', 'svg', savefigpath)
+
+        # plot JUV
+        # plot data and ctrl
+        averageBoxPlot = StartPlots()
+        averageBoxPlot.ax.set_title('Population noise correlation 0-1s')
+        averageBoxPlot.ax.set_ylim([0.1,0.6])
+        boxplot = averageBoxPlot.ax.boxplot([ADT1_correct, ADT1_incorrect],
+                                            positions=x - 0.1,widths=0.2,patch_artist=True, showfliers=False,
+                                            boxprops=dict(facecolor=adtColor, edgecolor=adtColor),
+                                            whiskerprops=dict(color=adtColor),
+                                            capprops=dict(color=adtColor),
+                                            medianprops=dict(marker='o', color='white', markersize=5))
+
+        boxplot = averageBoxPlot.ax.boxplot([JUV1_correct, JUV1_incorrect],
+                                            positions=x + 0.1,widths=0.2, patch_artist=True, showfliers=False,
+                                            boxprops=dict(facecolor=juvColor, edgecolor=juvColor),
+                                            whiskerprops=dict(color=juvColor),
+                                            capprops=dict(color=juvColor),
+                                            medianprops=dict(marker='o', color='white', markersize=5)
+                                            )
+
+        averageBoxPlot.ax.set_xticks([1, 2], ['Correct', 'Incorrect'])
+
+        averageBoxPlot.save_plot('Average population noise correlation0-1.png', 'png',savefigpath)
+        averageBoxPlot.save_plot('Average population noise correlation0-1.svg', 'svg', savefigpath)
+
+        # anova
+                # loop through every group
+        resp_anova = np.concatenate((ADT1_correct, ADT1_incorrect, ADT2_correct, ADT2_incorrect,
+                                    JUV1_correct, JUV1_incorrect, JUV2_correct, JUV2_incorrect))
+        age_anova = ['ADT']*len(ADT1_correct)*4 + ['JUV']*len(JUV1_correct)*4
+        trial_anova = ['correct']*len(ADT1_correct) + ['incorrect']*len(ADT1_incorrect) +\
+                    ['correct']*len(ADT2_correct) + ['incorrect']*len(ADT2_incorrect) +\
+                    ['correct']*len(JUV1_correct) + ['incorrect']*len(JUV1_incorrect) +\
+                    ['correct']*len(JUV2_correct) + ['incorrect']*len(JUV2_incorrect)
+        time_anova = ['0-1']*len(ADT1_correct)*2+['1-2']*len(ADT2_correct)*2 + \
+                    ['0-1']*len(JUV1_correct)*2+['1-2']*len(JUV2_correct)*2
+
+        anova_data = pd.DataFrame({'age':age_anova,
+                                           'trial': trial_anova,
+                                           'time': time_anova,
+                                   'response': resp_anova
+                                           })
+        model = ols('response ~ age + trial + time', anova_data).fit()
+        anova_table = sm.stats.anova_lm(model, typ=2)
+        anova_table.to_csv(os.path.join(savefigpath, 'population_noise_correlation_anova.csv'))
+
+        stats,p1_correct = mannwhitneyu(JUV1_correct,ADT1_correct)        # print ANOVA table
+        stats,p1_incorrect = mannwhitneyu(JUV1_incorrect,ADT1_incorrect)
+        stats, p2_correct = mannwhitneyu(JUV2_correct,ADT2_correct)
+        stats, p2_incorrect =  mannwhitneyu(JUV2_incorrect,ADT2_incorrect)
+        p_list = [p1_correct, p1_incorrect, p2_correct, p2_incorrect]
+        q_list = multipletests(p_list, method='fdr_bh')[1]
+
+        data = {'Group':['0-1Correct', '0-1Incorrect', '1-2Correct', '1-2Incorrect'],
+                'p-value': p_list,
+                'adjusted p-value': q_list}
+
+        df = pd.DataFrame(data)
+        df.to_csv(os.path.join(savefigpath, 'population_noise_correlation_mannwhitney.csv'))
+
         # signal-noise angle
         SNStatsPlot = StartSubplots(2, 2)
         SNStatsPlot.fig.suptitle('Signal-noise angle')
@@ -5494,6 +6997,508 @@ class fluoSum:
                                savefigpath)
         SNStatsPlot.save_plot('Signal noise angle.svg','svg',
                                savefigpath)
+
+        JUV1_ave = np.nanmean(SNangle_xneuron_JUV['ave'][timeMask1, :], 0)
+        ADT1_ave = np.nanmean(SNangle_xneuron_ADT['ave'][timeMask1, :], 0)
+        JUV1_go = np.nanmean(SNangle_xneuron_JUV['go'][timeMask1, :], 0)
+        ADT1_go = np.nanmean(SNangle_xneuron_ADT['go'][timeMask1, :], 0)
+        JUV1_nogo = np.nanmean(SNangle_xneuron_JUV['nogo'][timeMask1, :], 0)
+        ADT1_nogo = np.nanmean(SNangle_xneuron_ADT['nogo'][timeMask1, :], 0)
+
+        JUV2_ave = np.nanmean(SNangle_xneuron_JUV['ave'][timeMask2, :], 0)
+        ADT2_ave = np.nanmean(SNangle_xneuron_ADT['ave'][timeMask2, :], 0)
+        JUV2_go = np.nanmean(SNangle_xneuron_JUV['go'][timeMask2, :], 0)
+        ADT2_go = np.nanmean(SNangle_xneuron_ADT['go'][timeMask2, :], 0)
+        JUV2_nogo = np.nanmean(SNangle_xneuron_JUV['nogo'][timeMask2, :], 0)
+        ADT2_nogo = np.nanmean(SNangle_xneuron_ADT['nogo'][timeMask2, :], 0)
+
+        saveData['SNangle'] = {
+            'ADT1_ave': ADT1_ave, 'ADT1_go': ADT1_go, 'ADT1_nogo': ADT1_nogo,
+            'JUV1_ave': JUV1_ave, 'JUV1_go': JUV1_go, 'JUV1_nogo': JUV1_nogo,
+            'ADT2_ave': ADT2_ave, 'ADT2_go': ADT2_go, 'ADT2_nogo': ADT2_nogo,
+            'JUV2_ave': JUV2_ave, 'JUV2_go': JUV2_go, 'JUV2_nogo': JUV2_nogo
+        }
+
+        with open(os.path.join(savefigpath,'noiseCorrelationdata.pickle'), 'wb') as file:
+            # Use pickle to save the data
+            pickle.dump(saveData, file)
+
+        # box plot on 0-1 and 1-2 seconds
+        x = np.array([1,2,3])
+        averageBoxPlot = StartPlots()
+        averageBoxPlot.ax.set_title('Signal noise angle 1-2 s')
+        averageBoxPlot.ax.set_ylim([0,np.pi/2])
+        boxplot = averageBoxPlot.ax.boxplot([ADT2_ave, ADT2_go, ADT2_nogo],
+                                            positions= x - 0.1,widths=0.2,patch_artist=True, showfliers=False,
+                                            boxprops=dict(facecolor=adtColor, edgecolor=adtColor),
+                                            whiskerprops=dict(color=adtColor),
+                                            capprops=dict(color=adtColor),
+                                            medianprops=dict(marker='o', color='white', markersize=5))
+
+        boxplot =averageBoxPlot.ax.boxplot([JUV2_ave,JUV2_go, JUV2_nogo],
+                                           positions=x + 0.1, widths=0.2,patch_artist=True, showfliers=False,
+                                           boxprops=dict(facecolor=juvColor, edgecolor=juvColor),
+                                            whiskerprops=dict(color=juvColor),
+                                            capprops=dict(color=juvColor),
+                                            medianprops=dict(marker='o', color='white', markersize=5))
+        averageBoxPlot.ax.set_xticks([1, 2, 3], ['Average', 'Go', 'Nogo'])
+        averageBoxPlot.ax.set_yticks([0, np.pi/4, np.pi/2], ['0', 'π/4', 'π/2'])
+        averageBoxPlot.save_plot('Signal-noise angle 1-2.png', 'png',savefigpath)
+        averageBoxPlot.save_plot('Signal-noise angle 1-2.svg', 'svg', savefigpath)
+
+        # plot JUV
+        # plot data and ctrl
+        averageBoxPlot = StartPlots()
+        averageBoxPlot.ax.set_title('Signal noise angle 0-1s')
+        averageBoxPlot.ax.set_ylim([0,np.pi/2])
+        boxplot = averageBoxPlot.ax.boxplot([ADT1_ave, ADT1_go, ADT1_nogo],
+                                            positions=x - 0.1,widths=0.2,patch_artist=True, showfliers=False,
+                                            boxprops=dict(facecolor=adtColor, edgecolor=adtColor),
+                                            whiskerprops=dict(color=adtColor),
+                                            capprops=dict(color=adtColor),
+                                            medianprops=dict(marker='o', color='white', markersize=5))
+
+        boxplot = averageBoxPlot.ax.boxplot([JUV1_ave, JUV1_go, JUV1_nogo],
+                                            positions=x + 0.1,widths=0.2, patch_artist=True, showfliers=False,
+                                            boxprops=dict(facecolor=juvColor, edgecolor=juvColor),
+                                            whiskerprops=dict(color=juvColor),
+                                            capprops=dict(color=juvColor),
+                                            medianprops=dict(marker='o', color='white', markersize=5)
+                                            )
+
+        averageBoxPlot.ax.set_xticks([1, 2, 3], ['Average', 'Go', 'Nogo'])
+        averageBoxPlot.ax.set_yticks([0, np.pi / 4, np.pi / 2], ['0', 'π/4', 'π/2'])
+        averageBoxPlot.save_plot('Signal noise angle 0-1.png', 'png',savefigpath)
+        averageBoxPlot.save_plot('Signal noise angle 0-1.svg', 'svg', savefigpath)
+
+        # stats
+        # anova
+        resp_anova = np.concatenate((ADT1_go, ADT1_nogo, ADT2_go, ADT2_nogo,
+                                    JUV1_correct, JUV1_incorrect, JUV2_correct, JUV2_incorrect))
+        age_anova = ['ADT']*len(ADT1_correct)*4 + ['JUV']*len(JUV1_correct)*4
+        trial_anova = ['correct']*len(ADT1_correct) + ['incorrect']*len(ADT1_incorrect) +\
+                    ['correct']*len(ADT2_correct) + ['incorrect']*len(ADT2_incorrect) +\
+                    ['correct']*len(JUV1_correct) + ['incorrect']*len(JUV1_incorrect) +\
+                    ['correct']*len(JUV2_correct) + ['incorrect']*len(JUV2_incorrect)
+        time_anova = ['0-1']*len(ADT1_correct)*2+['1-2']*len(ADT2_correct)*2 + \
+                    ['0-1']*len(JUV1_correct)*2+['1-2']*len(JUV2_correct)*2
+        subject_anova = subject_ADT*4+subject_JUV*4
+        anova_data = pd.DataFrame({'age':age_anova,
+                                           'trial': trial_anova,
+                                           'time': time_anova,
+                                   'response': resp_anova
+                                           })
+        model = ols('response ~ age + trial + time', anova_data).fit()
+        anova_table = sm.stats.anova_lm(model, typ=2)
+        anova_table.to_csv(os.path.join(savefigpath, 'Signal_noise_anova.csv'))
+
+        stats, p_ave2 =mannwhitneyu(ADT2_ave, JUV2_ave)
+        stats, p_go2 = mannwhitneyu(ADT2_go, JUV2_go)
+        stats, p_nogo2 = mannwhitneyu(ADT2_nogo, JUV2_nogo)
+        p_list2 = np.array([p_ave2, p_go2, p_nogo2])
+        q_list2 = multipletests(p_list2, method='fdr_bh')[1]
+
+        stats, p_ave1 =mannwhitneyu(ADT1_ave, JUV1_ave)
+        stats, p_go1 = mannwhitneyu(ADT1_go, JUV1_nogo)
+        stats, p_nogo1 = mannwhitneyu(ADT1_nogo, JUV1_nogo)
+        p_list1 = np.array([p_ave1, p_go1, p_nogo1])
+        q_list1 = multipletests(p_list1, method='fdr_bh')[1]
+
+        data = {
+            'Group': ['ADT1', 'ADT2', 'JUV1', 'JUV2'],
+            'p-value': p_list,
+            'adjusted p-value': q_list
+        }
+        dataDF = pd.DataFrame(data)
+        dataDF.to_csv(os.path.join(savefigpath, 'Signal noise angle mannwhitney.csv'))
+
+        # load the results from late learning session
+        lateLearningFile = r'Z:\HongliWang\Madeline\LateLearning\Summary\fluo\noiseCorrelationdata.pickle'
+        #lateLearningFile = r'Z:\HongliWang\Madeline\Nonlearning_late\Summary\fluo\noiseCorrelationdata.pickle'
+        with open(lateLearningFile, 'rb') as pf:
+            lateLearningData = pickle.load(pf)
+            pf.close()
+
+        # compare pairwise, population, and signal noise angle across learning stage
+        averageBoxPlot = StartPlots()
+        averageBoxPlot.ax.set_title('Pairwise noise correlation Early vs late (correct trials)')
+        averageBoxPlot.ax.set_ylim([0, 0.06])
+        x=np.array([1,2])
+        boxplot = averageBoxPlot.ax.boxplot([saveData['pwCorr']['ADT2_correct'], lateLearningData['pwCorr']['ADT2_correct']],
+                                            positions=x - 0.1, widths=0.2, patch_artist=True, showfliers=False,
+                                            boxprops=dict(facecolor=adtColor, edgecolor=adtColor),
+                                            whiskerprops=dict(color=adtColor),
+                                            capprops=dict(color=adtColor),
+                                            medianprops=dict(marker='o', color='white', markersize=5))
+
+        boxplot = averageBoxPlot.ax.boxplot([saveData['pwCorr']['JUV2_correct'], lateLearningData['pwCorr']['JUV2_correct']],
+                                            positions=x + 0.1, widths=0.2, patch_artist=True, showfliers=False,
+                                            boxprops=dict(facecolor=juvColor, edgecolor=juvColor),
+                                            whiskerprops=dict(color=juvColor),
+                                            capprops=dict(color=juvColor),
+                                            medianprops=dict(marker='o', color='white', markersize=5))
+
+        averageBoxPlot.ax.set_xticks([1, 2], ['Early', 'Late'])
+
+        averageBoxPlot.save_plot('Average pairwise noise correlation1-2 -correct early vs late.png', 'png', savefigpath)
+        averageBoxPlot.save_plot('Average pairwise noise correlation1-2 -correct early vs late.svg', 'svg', savefigpath)
+
+        averageBoxPlot = StartPlots()
+        averageBoxPlot.ax.set_title('Pairwise noise correlation Early vs late (incorrect trials)')
+        averageBoxPlot.ax.set_ylim([0, 0.06])
+        x=np.array([1,2])
+        boxplot = averageBoxPlot.ax.boxplot([saveData['pwCorr']['ADT2_incorrect'], lateLearningData['pwCorr']['ADT2_incorrect']],
+                                            positions=x - 0.1, widths=0.2, patch_artist=True, showfliers=False,
+                                            boxprops=dict(facecolor=adtColor, edgecolor=adtColor),
+                                            whiskerprops=dict(color=adtColor),
+                                            capprops=dict(color=adtColor),
+                                            medianprops=dict(marker='o', color='white', markersize=5))
+
+        boxplot = averageBoxPlot.ax.boxplot([saveData['pwCorr']['JUV2_incorrect'], lateLearningData['pwCorr']['JUV2_incorrect']],
+                                            positions=x + 0.1, widths=0.2, patch_artist=True, showfliers=False,
+                                            boxprops=dict(facecolor=juvColor, edgecolor=juvColor),
+                                            whiskerprops=dict(color=juvColor),
+                                            capprops=dict(color=juvColor),
+                                            medianprops=dict(marker='o', color='white', markersize=5))
+
+        averageBoxPlot.ax.set_xticks([1, 2], ['Early', 'Late'])
+
+        averageBoxPlot.save_plot('Average pairwise noise correlation1-2 -incorrect early vs late.png', 'png', savefigpath)
+        averageBoxPlot.save_plot('Average pairwise noise correlation1-2 -incorrect early vs late.svg', 'svg', savefigpath)
+
+        # anova
+        resp_anova = np.concatenate((saveData['pwCorr']['ADT2_correct'], saveData['pwCorr']['ADT2_incorrect'],
+                                    saveData['pwCorr']['JUV2_correct'], saveData['pwCorr']['JUV2_incorrect'],
+                                    lateLearningData['pwCorr']['ADT2_correct'],lateLearningData['pwCorr']['ADT2_incorrect'],
+                                    lateLearningData['pwCorr']['JUV2_correct'], lateLearningData['pwCorr']['JUV2_incorrect']))
+
+        stage_anova = ['Early']* (len(saveData['pwCorr']['ADT2_correct'])*2 +len(saveData['pwCorr']['JUV2_correct'])*2)+\
+                      ['Late']* (len(lateLearningData['pwCorr']['ADT2_correct'])*2 + len(lateLearningData['pwCorr']['JUV2_correct'])*2)
+        trial_anova = ['correct']*len(saveData['pwCorr']['ADT2_correct']) + ['incorrect']*len(saveData['pwCorr']['ADT2_incorrect']) +\
+                    ['correct']*len(saveData['pwCorr']['JUV2_correct']) + ['incorrect']*len(saveData['pwCorr']['JUV2_incorrect']) +\
+                    ['correct']*len(lateLearningData['pwCorr']['ADT2_correct']) + ['incorrect']*len(lateLearningData['pwCorr']['ADT2_incorrect']) +\
+                    ['correct']*len(lateLearningData['pwCorr']['JUV2_correct']) + ['incorrect']*len(lateLearningData['pwCorr']['JUV2_incorrect'])
+        age_anova = ['ADT']*len(saveData['pwCorr']['ADT2_correct'])*2+['JUV']*len(saveData['pwCorr']['JUV2_correct'])*2 + \
+                    ['ADT']*len(lateLearningData['pwCorr']['ADT2_correct'])*2+['JUV']*len(lateLearningData['pwCorr']['JUV2_correct'])*2
+
+        anova_data = pd.DataFrame({'age':age_anova,
+                                           'trial': trial_anova,
+                                           'stage': stage_anova,
+                                   'response': resp_anova
+                                           })
+        model = ols('response ~ age + trial + stage + age:trial + age:stage + trial:stage', anova_data).fit()
+        anova_table = sm.stats.anova_lm(model, typ=2)
+        print(anova_table)
+        anova_table.to_csv(os.path.join(savefigpath, 'pairwiseNoise_learningstage.csv'))
+
+        stats, pJUV_correct = mannwhitneyu(saveData['pwCorr']['JUV2_correct'],lateLearningData['pwCorr']['JUV2_correct'])
+        stats, pJUV_incorrect = mannwhitneyu(saveData['pwCorr']['JUV2_incorrect'],lateLearningData['pwCorr']['JUV2_incorrect'])
+        stats, pADT_correct = mannwhitneyu(saveData['pwCorr']['ADT2_correct'],lateLearningData['pwCorr']['ADT2_correct'])
+        stats, pADT_incorrect = mannwhitneyu(saveData['pwCorr']['ADT2_incorrect'],lateLearningData['pwCorr']['ADT2_incorrect'])
+
+        # average pairwise noise correlation
+        averageBoxPlot = StartPlots()
+        averageBoxPlot.ax.set_title('Pairwise noise correlation Early vs late (average)')
+        averageBoxPlot.ax.set_ylim([0, 0.06])
+        x = np.array([1, 2])
+        ADT_early = (saveData['pwCorr']['ADT2_incorrect']+saveData['pwCorr']['ADT2_correct'])/2
+        ADT_late = (lateLearningData['pwCorr']['ADT2_correct']+lateLearningData['pwCorr']['ADT2_incorrect'])/2
+        boxplot = averageBoxPlot.ax.boxplot(
+            [ADT_early,ADT_late],
+            positions=x - 0.1, widths=0.2, patch_artist=True, showfliers=False,
+            boxprops=dict(facecolor=adtColor, edgecolor=adtColor),
+            whiskerprops=dict(color=adtColor),
+            capprops=dict(color=adtColor),
+            medianprops=dict(marker='o', color='white', markersize=5))
+        JUV_early = (saveData['pwCorr']['JUV2_incorrect']+saveData['pwCorr']['JUV2_correct'])/2
+        JUV_late = (lateLearningData['pwCorr']['JUV2_correct']+lateLearningData['pwCorr']['JUV2_incorrect'])/2
+        boxplot = averageBoxPlot.ax.boxplot(
+            [JUV_early, JUV_late],
+            positions=x + 0.1, widths=0.2, patch_artist=True, showfliers=False,
+            boxprops=dict(facecolor=juvColor, edgecolor=juvColor),
+            whiskerprops=dict(color=juvColor),
+            capprops=dict(color=juvColor),
+            medianprops=dict(marker='o', color='white', markersize=5))
+
+        averageBoxPlot.ax.set_xticks([1, 2], ['Early', 'Late'])
+
+        averageBoxPlot.save_plot('Average pairwise noise correlation1-2 early vs late.png', 'png',
+                                 savefigpath)
+        averageBoxPlot.save_plot('Average pairwise noise correlation1-2early vs late.svg', 'svg',
+                                 savefigpath)
+
+        resp_anova = np.concatenate((ADT_early, ADT_late, JUV_early, JUV_late))
+
+        stage_anova = ['Early']* len(ADT_early) +['Late']*len(ADT_late)+\
+                      ['Early']* len(JUV_early) + ['Late']*len(JUV_late)
+        age_anova = ['ADT']*(len(ADT_early)+len(ADT_late)) + ['JUV']*(len(JUV_early)+len(JUV_late))
+
+        anova_data = pd.DataFrame({'age':age_anova,
+                                           'stage': stage_anova,
+                                   'response': resp_anova
+                                           })
+        model = ols('response ~ age +stage', anova_data).fit()
+        anova_table = sm.stats.anova_lm(model, typ=2)
+        anova_table.to_csv(os.path.join(savefigpath, 'pairwiseNoise_learningstage_average.csv'))
+
+        stats, pJUV_correct = mannwhitneyu(saveData['pwCorr']['JUV2_correct'],lateLearningData['pwCorr']['JUV2_correct'])
+        stats, pJUV_incorrect = mannwhitneyu(saveData['pwCorr']['JUV2_incorrect'],lateLearningData['pwCorr']['JUV2_incorrect'])
+        stats, pADT_correct = mannwhitneyu(saveData['pwCorr']['ADT2_correct'],lateLearningData['pwCorr']['ADT2_correct'])
+        stats, pADT_incorrect = mannwhitneyu(saveData['pwCorr']['ADT2_incorrect'],lateLearningData['pwCorr']['ADT2_incorrect'])
+
+
+        ## population noise stage comparison
+        averageBoxPlot = StartPlots()
+        averageBoxPlot.ax.set_title('Population noise correlation Early vs late (correct trials)')
+        averageBoxPlot.ax.set_ylim([0.1, 0.7])
+        x=np.array([1,2])
+        boxplot = averageBoxPlot.ax.boxplot([saveData['popCorr']['ADT2_correct'], lateLearningData['popCorr']['ADT2_correct']],
+                                            positions=x - 0.1, widths=0.2, patch_artist=True, showfliers=False,
+                                            boxprops=dict(facecolor=adtColor, edgecolor=adtColor),
+                                            whiskerprops=dict(color=adtColor),
+                                            capprops=dict(color=adtColor),
+                                            medianprops=dict(marker='o', color='white', markersize=5))
+
+        boxplot = averageBoxPlot.ax.boxplot([saveData['popCorr']['JUV2_correct'], lateLearningData['popCorr']['JUV2_correct']],
+                                            positions=x + 0.1, widths=0.2, patch_artist=True, showfliers=False,
+                                            boxprops=dict(facecolor=juvColor, edgecolor=juvColor),
+                                            whiskerprops=dict(color=juvColor),
+                                            capprops=dict(color=juvColor),
+                                            medianprops=dict(marker='o', color='white', markersize=5))
+
+        averageBoxPlot.ax.set_xticks([1, 2], ['Early', 'Late'])
+
+        averageBoxPlot.save_plot('Average population noise correlation1-2 -correct early vs late.png', 'png', savefigpath)
+        averageBoxPlot.save_plot('Average population noise correlation1-2 -correct early vs late.svg', 'svg', savefigpath)
+
+        averageBoxPlot = StartPlots()
+        averageBoxPlot.ax.set_title('Population noise correlation Early vs late (incorrect trials)')
+        averageBoxPlot.ax.set_ylim([0.1, 0.7])
+        x=np.array([1,2])
+        boxplot = averageBoxPlot.ax.boxplot([saveData['popCorr']['ADT2_incorrect'], lateLearningData['popCorr']['ADT2_incorrect']],
+                                            positions=x - 0.1, widths=0.2, patch_artist=True, showfliers=False,
+                                            boxprops=dict(facecolor=adtColor, edgecolor=adtColor),
+                                            whiskerprops=dict(color=adtColor),
+                                            capprops=dict(color=adtColor),
+                                            medianprops=dict(marker='o', color='white', markersize=5))
+
+        boxplot = averageBoxPlot.ax.boxplot([saveData['popCorr']['JUV2_incorrect'], lateLearningData['popCorr']['JUV2_incorrect']],
+                                            positions=x + 0.1, widths=0.2, patch_artist=True, showfliers=False,
+                                            boxprops=dict(facecolor=juvColor, edgecolor=juvColor),
+                                            whiskerprops=dict(color=juvColor),
+                                            capprops=dict(color=juvColor),
+                                            medianprops=dict(marker='o', color='white', markersize=5))
+
+        averageBoxPlot.ax.set_xticks([1, 2], ['Early', 'Late'])
+
+        averageBoxPlot.save_plot('Average population noise correlation1-2 -incorrect early vs late.png', 'png', savefigpath)
+        averageBoxPlot.save_plot('Average population noise correlation1-2 -incorrect early vs late.svg', 'svg', savefigpath)
+
+        # anova
+        resp_anova = np.concatenate((saveData['popCorr']['ADT2_correct'], saveData['popCorr']['ADT2_incorrect'],
+                                    saveData['popCorr']['JUV2_correct'], saveData['popCorr']['JUV2_incorrect'],
+                                    lateLearningData['popCorr']['ADT2_correct'],lateLearningData['popCorr']['ADT2_incorrect'],
+                                    lateLearningData['popCorr']['JUV2_correct'], lateLearningData['popCorr']['JUV2_incorrect']))
+
+        stage_anova = ['Early']* (len(saveData['popCorr']['ADT2_correct'])*2 +len(saveData['popCorr']['JUV2_correct'])*2)+\
+                      ['Late']* (len(lateLearningData['popCorr']['ADT2_correct'])*2 + len(lateLearningData['popCorr']['JUV2_correct'])*2)
+        trial_anova = ['correct']*len(saveData['popCorr']['ADT2_correct']) + ['incorrect']*len(saveData['popCorr']['ADT2_incorrect']) +\
+                    ['correct']*len(saveData['popCorr']['JUV2_correct']) + ['incorrect']*len(saveData['popCorr']['JUV2_incorrect']) +\
+                    ['correct']*len(lateLearningData['popCorr']['ADT2_correct']) + ['incorrect']*len(lateLearningData['popCorr']['ADT2_incorrect']) +\
+                    ['correct']*len(lateLearningData['popCorr']['JUV2_correct']) + ['incorrect']*len(lateLearningData['popCorr']['JUV2_incorrect'])
+        age_anova = ['ADT']*len(saveData['popCorr']['ADT2_correct'])*2+['JUV']*len(saveData['popCorr']['JUV2_correct'])*2 + \
+                    ['ADT']*len(lateLearningData['popCorr']['ADT2_correct'])*2+['JUV']*len(lateLearningData['popCorr']['JUV2_correct'])*2
+        #subject_anova =
+
+        anova_data = pd.DataFrame({'age':age_anova,
+                                           'trial': trial_anova,
+                                           'stage': stage_anova,
+                                   'response': resp_anova
+                                           })
+        model = ols('response ~ age + trial + stage + age:stage + age:trial + stage:trial', anova_data).fit()
+        anova_table = sm.stats.anova_lm(model, typ=2)
+        print("Anova table for population correlation")
+        print(anova_table)
+        anova_table.to_csv(os.path.join(savefigpath, 'populationNoise_learningstage.csv'))
+
+        from statsmodels.regression.mixed_linear_model import MixedLM
+        model = MixedLM.from_formula('response ~ age + trial + stage + age:stage + age:trial + stage:trial',
+                                     anova_data,
+                                     groups=anova_data['random_factor'])
+        result = model.fit()
+        print(result.summary())
+
+        averageBoxPlot = StartPlots()
+        averageBoxPlot.ax.set_title('Population noise correlation Early vs late (average)')
+        averageBoxPlot.ax.set_ylim([0.1, 0.7])
+        x = np.array([1, 2])
+        ADT_early = (saveData['popCorr']['ADT2_incorrect']+saveData['popCorr']['ADT2_correct'])/2
+        ADT_late = (lateLearningData['popCorr']['ADT2_correct']+lateLearningData['popCorr']['ADT2_incorrect'])/2
+        boxplot = averageBoxPlot.ax.boxplot(
+            [ADT_early,ADT_late],
+            positions=x - 0.1, widths=0.2, patch_artist=True, showfliers=False,
+            boxprops=dict(facecolor=adtColor, edgecolor=adtColor),
+            whiskerprops=dict(color=adtColor),
+            capprops=dict(color=adtColor),
+            medianprops=dict(marker='o', color='white', markersize=5))
+        JUV_early = (saveData['popCorr']['JUV2_incorrect']+saveData['popCorr']['JUV2_correct'])/2
+        JUV_late = (lateLearningData['popCorr']['JUV2_correct']+lateLearningData['popCorr']['JUV2_incorrect'])/2
+        boxplot = averageBoxPlot.ax.boxplot(
+            [JUV_early, JUV_late],
+            positions=x + 0.1, widths=0.2, patch_artist=True, showfliers=False,
+            boxprops=dict(facecolor=juvColor, edgecolor=juvColor),
+            whiskerprops=dict(color=juvColor),
+            capprops=dict(color=juvColor),
+            medianprops=dict(marker='o', color='white', markersize=5))
+
+        averageBoxPlot.ax.set_xticks([1, 2], ['Early', 'Late'])
+
+        averageBoxPlot.save_plot('Average population noise correlation1-2 early vs late.png', 'png',
+                                 savefigpath)
+        averageBoxPlot.save_plot('Average population noise correlation1-2early vs late.svg', 'svg',
+                                 savefigpath)
+        resp_anova = np.concatenate((ADT_early, ADT_late, JUV_early, JUV_late))
+
+        stage_anova = ['Early']* len(ADT_early) +['Late']*len(ADT_late)+\
+                      ['Early']* len(JUV_early) + ['Late']*len(JUV_late)
+        age_anova = ['ADT']*(len(ADT_early)+len(ADT_late)) + ['JUV']*(len(JUV_early)+len(JUV_late))
+
+        anova_data = pd.DataFrame({'age':age_anova,
+                                           'stage': stage_anova,
+                                   'response': resp_anova
+                                           })
+        model = ols('response ~ age +stage ', anova_data).fit()
+        anova_table = sm.stats.anova_lm(model, typ=2)
+        anova_table.to_csv(os.path.join(savefigpath, 'populationNoise_learningstage_average.csv'))
+
+        stats, pJUV_correct = mannwhitneyu(saveData['popCorr']['JUV2_correct'],lateLearningData['popCorr']['JUV2_correct'])
+        stats, pJUV_incorrect = mannwhitneyu(saveData['popCorr']['JUV2_incorrect'],lateLearningData['popCorr']['JUV2_incorrect'])
+        stats, pADT_correct = mannwhitneyu(saveData['popCorr']['ADT2_correct'],lateLearningData['popCorr']['ADT2_correct'])
+        stats, pADT_incorrect = mannwhitneyu(saveData['popCorr']['ADT2_incorrect'],lateLearningData['popCorr']['ADT2_incorrect'])
+
+        # signal noise angle
+        averageBoxPlot = StartPlots()
+        averageBoxPlot.ax.set_title('Signal noise correlation Early vs late (go trials) ')
+        x=np.array([1,2])
+        boxplot = averageBoxPlot.ax.boxplot([saveData['SNangle']['ADT2_go'], lateLearningData['SNangle']['ADT2_go']],
+                                            positions=x - 0.1, widths=0.2, patch_artist=True, showfliers=False,
+                                            boxprops=dict(facecolor=adtColor, edgecolor=adtColor),
+                                            whiskerprops=dict(color=adtColor),
+                                            capprops=dict(color=adtColor),
+                                            medianprops=dict(marker='o', color='white', markersize=5))
+
+        boxplot = averageBoxPlot.ax.boxplot([saveData['SNangle']['JUV2_go'], lateLearningData['SNangle']['JUV2_go']],
+                                            positions=x + 0.1, widths=0.2, patch_artist=True, showfliers=False,
+                                            boxprops=dict(facecolor=juvColor, edgecolor=juvColor),
+                                            whiskerprops=dict(color=juvColor),
+                                            capprops=dict(color=juvColor),
+                                            medianprops=dict(marker='o', color='white', markersize=5))
+        averageBoxPlot.ax.set_ylim([0, np.pi / 2])
+        averageBoxPlot.ax.set_yticks([0, np.pi / 4, np.pi / 2], ['0', 'π/4', 'π/2'])
+        averageBoxPlot.ax.set_xticks([1, 2], ['Early', 'Late'])
+
+        averageBoxPlot.save_plot('Average signal noise angle1-2 -go early vs late.png', 'png', savefigpath)
+        averageBoxPlot.save_plot('Average signal noise angle1-2 -go early vs late.svg', 'svg', savefigpath)
+
+        averageBoxPlot = StartPlots()
+        averageBoxPlot.ax.set_title('Signal noise angle Early vs late (nogo trials)')
+        x=np.array([1,2])
+        boxplot = averageBoxPlot.ax.boxplot([saveData['SNangle']['ADT2_nogo'], lateLearningData['SNangle']['ADT2_nogo']],
+                                            positions=x - 0.1, widths=0.2, patch_artist=True, showfliers=False,
+                                            boxprops=dict(facecolor=adtColor, edgecolor=adtColor),
+                                            whiskerprops=dict(color=adtColor),
+                                            capprops=dict(color=adtColor),
+                                            medianprops=dict(marker='o', color='white', markersize=5))
+
+        boxplot = averageBoxPlot.ax.boxplot([saveData['SNangle']['JUV2_nogo'], lateLearningData['SNangle']['JUV2_nogo']],
+                                            positions=x + 0.1, widths=0.2, patch_artist=True, showfliers=False,
+                                            boxprops=dict(facecolor=juvColor, edgecolor=juvColor),
+                                            whiskerprops=dict(color=juvColor),
+                                            capprops=dict(color=juvColor),
+                                            medianprops=dict(marker='o', color='white', markersize=5))
+
+        averageBoxPlot.ax.set_xticks([1, 2], ['Early', 'Late'])
+        averageBoxPlot.ax.set_ylim([0, np.pi / 2])
+        averageBoxPlot.ax.set_yticks([0, np.pi / 4, np.pi / 2], ['0', 'π/4', 'π/2'])
+        averageBoxPlot.save_plot('Signal noise angle1-2 nogo early vs late.png', 'png', savefigpath)
+        averageBoxPlot.save_plot('Signal noise angle1-2 nogo  early vs late.svg', 'svg', savefigpath)
+
+        # anova
+        resp_anova = np.concatenate((saveData['SNangle']['ADT2_go'], saveData['SNangle']['ADT2_nogo'],
+                                    saveData['SNangle']['JUV2_go'], saveData['SNangle']['JUV2_nogo'],
+                                    lateLearningData['SNangle']['ADT2_go'],lateLearningData['SNangle']['ADT2_nogo'],
+                                    lateLearningData['SNangle']['JUV2_go'], lateLearningData['SNangle']['JUV2_nogo']))
+
+        stage_anova = ['Early']* (len(saveData['SNangle']['ADT2_go'])*2 +len(saveData['SNangle']['JUV2_nogo'])*2)+\
+                      ['Late']* (len(lateLearningData['SNangle']['ADT2_go'])*2 + len(lateLearningData['SNangle']['JUV2_nogo'])*2)
+        trial_anova = ['go']*len(saveData['SNangle']['ADT2_go']) + ['nogo']*len(saveData['SNangle']['ADT2_nogo']) +\
+                    ['go']*len(saveData['SNangle']['JUV2_go']) + ['nogo']*len(saveData['SNangle']['JUV2_nogo']) +\
+                    ['go']*len(lateLearningData['SNangle']['ADT2_go']) + ['nogo']*len(lateLearningData['SNangle']['ADT2_nogo']) +\
+                    ['go']*len(lateLearningData['SNangle']['JUV2_go']) + ['nogo']*len(lateLearningData['SNangle']['JUV2_nogo'])
+        age_anova = ['ADT']*len(saveData['SNangle']['ADT2_go'])*2+['JUV']*len(saveData['SNangle']['JUV2_go'])*2 + \
+                    ['ADT']*len(lateLearningData['SNangle']['ADT2_go'])*2+['JUV']*len(lateLearningData['SNangle']['JUV2_go'])*2
+
+        anova_data = pd.DataFrame({'age':age_anova,
+                                           'trial': trial_anova,
+                                           'stage': stage_anova,
+                                   'response': resp_anova
+                                           })
+        model = ols('response ~ age + trial + stage + age:stage + age:trial + stage:trial', anova_data).fit()
+        anova_table = sm.stats.anova_lm(model, typ=2)
+        anova_table.to_csv(os.path.join(savefigpath, 'SNangle_learningstage.csv'))
+
+        averageBoxPlot = StartPlots()
+        averageBoxPlot.ax.set_title('Signal noise Early vs late (average)')
+        averageBoxPlot.ax.set_ylim([0, np.pi / 2])
+        averageBoxPlot.ax.set_yticks([0, np.pi / 4, np.pi / 2], ['0', 'π/4', 'π/2'])
+        x = np.array([1, 2])
+        ADT_early = saveData['SNangle']['ADT2_ave']
+        ADT_late = lateLearningData['SNangle']['ADT2_ave']
+        boxplot = averageBoxPlot.ax.boxplot(
+            [ADT_early,ADT_late],
+            positions=x - 0.1, widths=0.2, patch_artist=True, showfliers=False,
+            boxprops=dict(facecolor=adtColor, edgecolor=adtColor),
+            whiskerprops=dict(color=adtColor),
+            capprops=dict(color=adtColor),
+            medianprops=dict(marker='o', color='white', markersize=5))
+        JUV_early = saveData['SNangle']['JUV2_ave']
+        JUV_late = lateLearningData['SNangle']['JUV2_ave']
+        boxplot = averageBoxPlot.ax.boxplot(
+            [JUV_early, JUV_late],
+            positions=x + 0.1, widths=0.2, patch_artist=True, showfliers=False,
+            boxprops=dict(facecolor=juvColor, edgecolor=juvColor),
+            whiskerprops=dict(color=juvColor),
+            capprops=dict(color=juvColor),
+            medianprops=dict(marker='o', color='white', markersize=5))
+
+        averageBoxPlot.ax.set_xticks([1, 2], ['Early', 'Late'])
+
+        averageBoxPlot.save_plot('Average signal noise angle1-2 early vs late.png', 'png',
+                                 savefigpath)
+        averageBoxPlot.save_plot('Average signal noise angle1-2early vs late.svg', 'svg',
+                                 savefigpath)
+        resp_anova = np.concatenate((ADT_early, ADT_late, JUV_early, JUV_late))
+
+        stage_anova = ['Early']* len(ADT_early) +['Late']*len(ADT_late)+\
+                      ['Early']* len(JUV_early) + ['Late']*len(JUV_late)
+        age_anova = ['ADT']*(len(ADT_early)+len(ADT_late)) + ['JUV']*(len(JUV_early)+len(JUV_late))
+
+        anova_data = pd.DataFrame({'age':age_anova,
+                                           'stage': stage_anova,
+                                   'response': resp_anova
+                                           })
+        model = ols('response ~ age +stage + age*stage', anova_data).fit()
+        anova_table = sm.stats.anova_lm(model, typ=2)
+        anova_table.to_csv(os.path.join(savefigpath, 'Signal_noise_learningstage_average.csv'))
+
+        # Mann-Whitney U test
+
+        stats, pJUV_go = mannwhitneyu(saveData['SNangle']['JUV2_go'],lateLearningData['SNangle']['JUV2_go'])
+        stats, pJUV_nogo = mannwhitneyu(saveData['SNangle']['JUV2_nogo'],lateLearningData['SNangle']['JUV2_nogo'])
+        stats, pADT_go = mannwhitneyu(saveData['SNangle']['ADT2_go'],lateLearningData['SNangle']['ADT2_go'])
+        stats, pADT_nogo = mannwhitneyu(saveData['SNangle']['ADT2_nogo'],lateLearningData['SNangle']['ADT2_nogo'])
+
+
     def pseudo_session(self):
         nFiles = self.data_df.shape[0]
         for f in tqdm(range(nFiles)):
@@ -5587,7 +7592,7 @@ class fluoSum:
             #analysis = group_adt.iloc[f]['fluo_analysis']
             # load decoding
             decodingPath = os.path.join(group.iloc[f]['fluo_analysis_dir'], 'decoding')
-            decodingFile= os.path.join(decodingPath, 'decodingResult.pickle')
+            decodingFile= os.path.join(decodingPath, 'decodingResult_SVC.pickle')
             # load the pickle file
             with open(decodingFile, 'rb') as file:
                 decodingResult = pickle.load(file)
@@ -5619,7 +7624,8 @@ class fluoSum:
 
                 for trial in trialTypes:
                     decodingAccuracy_trialType_full[trial] = decodingResult['stimulus']['prediction_accuracy'][trial][:,np.newaxis]
-                if len(decodingResult['stimulus']['decode_realSize']['nNeurons'])>=nInd+1:
+                #if len(decodingResult['stimulus']['decode_realSize']['nNeurons'])>=nInd+1:
+                if nInd < decodingResult['stimulus']['decode_realSize']['accuracy'].shape[1]:
                     decodingAccuracy = decodingResult['stimulus']['decode_realSize']['accuracy'][:,nInd][:,np.newaxis]
 
                     # decoding accuracy in trial types
@@ -5631,7 +7637,8 @@ class fluoSum:
                         decodingAccuracy_trialType[trial] = np.full((len(decodingResult['stimulus']['decode_realSize']['regr_time']),1),np.nan)
                 decodingCtrl = decodingResult['stimulus']['ctrl_accuracy'][:,np.newaxis]
                 #pseudoDecodingAccuracy_ADT = pseudoDecodingResult['decode_pseudo']['accuracy'][:,np.newaxis]
-                if len(decodingResult['stimulus']['decode_realSize']['nNeurons'])>=nInd+1:
+                #if len(decodingResult['stimulus']['decode_realSize']['nNeurons'])>=nInd+1:
+                if nInd < decodingResult['stimulus']['decode_realSize']['accuracy'].shape[1]:
                     pseudoDecodingAccuracy = pseudoDecodingResult['decode_pseudoSize']['accuracy'][:,nInd][:,np.newaxis]
                     for trial in trialTypes:
                         pseudoDecodingAccuracy_trialType[trial] = \
@@ -5651,7 +7658,8 @@ class fluoSum:
                 timeEnd = 2
                 timeMask = np.logical_and(decodingTime >= timeStart,
                                           decodingTime < timeEnd)
-                if len(decodingResult['stimulus']['decode_realSize']['nNeurons'])>=nInd+1:
+                #if len(decodingResult['stimulus']['decode_realSize']['nNeurons'])>=nInd+1:
+                if nInd < decodingResult['stimulus']['decode_realSize']['accuracy'].shape[1]:
                     decodingAccuracy_ave = [np.nanmean(decodingResult['stimulus']['decode_realSize']['accuracy'][timeMask,nInd], 0)]
                     pseudoDecodingAccuracy_ave = [
                         np.nanmean(pseudoDecodingResult['decode_pseudoSize']['accuracy'][timeMask, nInd], 0)]
@@ -5662,15 +7670,15 @@ class fluoSum:
                             pseudoDecodingResult['decode_pseudoSize']['prediction_accuracy'][trial][timeMask, nInd],
                             0)]
                 else:
-                    decodingAccuracy_ave_ADT = [np.nan]
+                    decodingAccuracy_ave = [np.nan]
                     for trial in trialTypes:
                         decodingAccuracy_ave_trialType[trial] = [np.nan]
                         pseudoDecodingAccuracy_ave_trialType[trial] = [np.nan]
-                SNSlope_pre = [noiseResult['SNCorr_slope_pre']]
-                SNSlope_post = [noiseResult['SNCorr_slope_after']]
-
-                pseudoSNSlope_pre = [pseudoNoiseResult['SNCorr_slope_pre']]
-                pseudoSNSlope_post= [pseudoNoiseResult['SNCorr_slope_after']]
+                # SNSlope_pre = [noiseResult['SNCorr_slope_pre']]
+                # SNSlope_post = [noiseResult['SNCorr_slope_after']]
+                #
+                # pseudoSNSlope_pre = [pseudoNoiseResult['SNCorr_slope_pre']]
+                # pseudoSNSlope_post= [pseudoNoiseResult['SNCorr_slope_after']]
 
             else:
                     # calcualte average population mean and var by different trialtype
@@ -5679,7 +7687,8 @@ class fluoSum:
                                             decodingResult['stimulus']['prediction_accuracy'][
                                                                      trial][:, np.newaxis]),1)
 
-                if len(decodingResult['stimulus']['decode_realSize']['nNeurons'])>=nInd+1:
+                #if len(decodingResult['stimulus']['decode_realSize']['nNeurons'])>=nInd+1:
+                if nInd < decodingResult['stimulus']['decode_realSize']['accuracy'].shape[1]:
                     decodingAccuracy = np.concatenate((decodingAccuracy,
                                         decodingResult['stimulus']['decode_realSize']['accuracy'][:, nInd][:,np.newaxis]) ,1)
                     pseudoDecodingAccuracy = np.concatenate((pseudoDecodingAccuracy,
@@ -5705,11 +7714,11 @@ class fluoSum:
                 pseudoDecodingCtrl = np.concatenate((pseudoDecodingCtrl,
                                     pseudoDecodingResult['decode_pseudo']['ctrl_accuracy'][:,np.newaxis]),1)
 
-                SNSlope_pre.append(noiseResult['SNCorr_slope_pre'])
-                SNSlope_post.append(noiseResult['SNCorr_slope_after'])
-
-                pseudoSNSlope_pre.append(pseudoNoiseResult['SNCorr_slope_pre'])
-                pseudoSNSlope_post.append(pseudoNoiseResult['SNCorr_slope_after'])
+                # SNSlope_pre.append(noiseResult['SNCorr_slope_pre'])
+                # SNSlope_post.append(noiseResult['SNCorr_slope_after'])
+                #
+                # pseudoSNSlope_pre.append(pseudoNoiseResult['SNCorr_slope_pre'])
+                # pseudoSNSlope_post.append(pseudoNoiseResult['SNCorr_slope_after'])
 
         result= {}
         result['accuracy_real'] = decodingAccuracy
@@ -5722,19 +7731,19 @@ class fluoSum:
         result['accuracy_pseudo_trialType'] = pseudoDecodingAccuracy_trialType
         result['accuracy_real_ctrl'] = decodingCtrl
         result['accuracy_pseudo_ctrl'] = pseudoDecodingCtrl
-        result['SNSlope_pre_real'] = SNSlope_pre
-        result['SNSlope_post_real'] = SNSlope_post
-        result['SNSlope_pre_pseudo'] = pseudoSNSlope_pre
-        result['SNSlope_post_pseudo'] = pseudoSNSlope_post
+        # result['SNSlope_pre_real'] = SNSlope_pre
+        # result['SNSlope_post_real'] = SNSlope_post
+        # result['SNSlope_pre_pseudo'] = pseudoSNSlope_pre
+        # result['SNSlope_post_pseudo'] = pseudoSNSlope_post
         result['time'] = decodingTime
         return result
 
 
-    def pseudo_summray(self, group_adt, group_juv,group_label):
+    def pseudo_summary(self, group_adt, group_juv,group_label):
         savefigpath = os.path.join(self.root_dir, self.summary_dir, 'fluo')
         trialTypes = ['Hit','FA','CorRej']
-        adtColor = (83/255,187/255,244/255)
-        juvColor = (255/255,67/255,46/255)
+        realColor = (19/255,24/255,66/255)
+        pseudoColor = (230/255,131/255,105/255)
         nNeurons = 80
 
         # load ADT groups
@@ -5746,15 +7755,19 @@ class fluoSum:
         decodingPlot = StartSubplots(1,2)
         bootADT_real = bootstrap(result_ADT['accuracy_real'],1, 1000)
         bootADT_pseudo = bootstrap(result_ADT['accuracy_pseudo'], 1, 1000)
-        decodingPlot.ax[0].plot(result_ADT['time'], bootADT_real['bootAve'], color='blue', label = 'real')
-        decodingPlot.ax[0].plot(result_ADT['time'], bootADT_pseudo['bootAve'], color = 'red', label = 'real')
+        decodingPlot.ax[0].plot(result_ADT['time'], bootADT_real['bootAve'], color=realColor, label = 'real')
+        decodingPlot.ax[0].plot(result_ADT['time'], bootADT_pseudo['bootAve'], color = pseudoColor, label = 'real')
         decodingPlot.ax[0].fill_between(result_ADT['time'], bootADT_real['bootLow'],
                                                         bootADT_real['bootHigh'],
-                                                        alpha=0.2, color='blue')
+                                                        alpha=0.2, color=realColor)
         decodingPlot.ax[0].fill_between(result_ADT['time'], bootADT_pseudo['bootLow'],
                                                 bootADT_pseudo['bootHigh'],
-                                                alpha=0.2, color='red')
-        decodingPlot.ax[0].set_ylim([0,1])
+                                                alpha=0.2, color=pseudoColor)
+        decodingPlot.ax[0].set_ylim([0.3,1.05])
+        decodingPlot.ax[0].set_ylabel('Decoding accuracy')
+        decodingPlot.ax[0].set_xlabel('Time from cue(s)')
+        decodingPlot.ax[0].set_title('ADT')
+
         decodingTime = result_ADT['time']
         # pair-wise wilcoxon test
         p_list = []
@@ -5768,38 +7781,39 @@ class fluoSum:
         dt = decodingTime[1] - decodingTime[0]
         # Identify significant results
         significant_results = [p < FDR_threshold for p in q_values]
-        for tt in range(len(decodingTime)):
-            if significant_results[tt]:
-                decodingPlot.ax[0].plot(decodingTime[tt] + dt * np.array([-0.5, 0.5]),
-                                                        [1, 1], color=(1, 69 / 255, 0), linewidth=5)
+        # for tt in range(len(decodingTime)):
+        #     if significant_results[tt]:
+        #         decodingPlot.ax[0].plot(decodingTime[tt] + dt * np.array([-0.5, 0.5]),
+        #                                                 [1, 1], color=(1, 69 / 255, 0), linewidth=5)
         bootJUV_real = bootstrap(result_JUV['accuracy_real'],1, 0,1000)
         bootJUV_pseudo = bootstrap(result_JUV['accuracy_pseudo'], 1,0, 1000)
-        decodingPlot.ax[1].plot(result_JUV['time'], bootJUV_real['bootAve'], color='blue', label = 'real')
-        decodingPlot.ax[1].plot(result_JUV['time'], bootJUV_pseudo['bootAve'], color = 'red', label = 'pseudo')
+        decodingPlot.ax[1].plot(result_JUV['time'], bootJUV_real['bootAve'], color=realColor , label = 'real')
+        decodingPlot.ax[1].plot(result_JUV['time'], bootJUV_pseudo['bootAve'], color = pseudoColor, label = 'pseudo')
         decodingPlot.ax[1].fill_between(result_JUV['time'], bootJUV_real['bootLow'],
                                                         bootJUV_real['bootHigh'],
-                                                        alpha=0.2, color='blue')
+                                                        alpha=0.2, color=realColor )
         decodingPlot.ax[1].fill_between(result_JUV['time'], bootJUV_pseudo['bootLow'],
                                                         bootJUV_pseudo['bootHigh'],
-                                                        alpha=0.2, color='red')
-        decodingPlot.ax[1].set_ylim([0, 1])
+                                                        alpha=0.2, color=pseudoColor)
+        decodingPlot.ax[1].set_ylim([0.3, 1.05])
         decodingPlot.ax[1].legend()
-
+        decodingPlot.ax[1].set_xlabel('Time from cue(s)')
+        decodingPlot.ax[1].set_title('JUV')
         p_list = []
         for tt in range(len(result_JUV['time'])):
             statistic, p_wilcoxon = wilcoxon(result_JUV['accuracy_real'][tt, :],
                                                result_JUV['accuracy_pseudo'][tt, :])
             p_list.append(p_wilcoxon)
         q_values = multipletests(p_list, method='fdr_bh')[1]
-        significant_results = [p < FDR_threshold for p in q_values]
-        for tt in range(len(decodingTime)):
-            if significant_results[tt]:
-                decodingPlot.ax[1].plot(decodingTime[tt] + dt * np.array([-0.5, 0.5]),
-                                                        [1, 1], color=(1, 69 / 255, 0), linewidth=5)
+        # significant_results = [p < FDR_threshold for p in q_values]
+        # for tt in range(len(decodingTime)):
+        #     if significant_results[tt]:
+        #         decodingPlot.ax[1].plot(decodingTime[tt] + dt * np.array([-0.5, 0.5]),
+        #                                                 [1, 1], color=(1, 69 / 255, 0), linewidth=5)
 
-        decodingPlot.save_plot('Average decoding accuracy real-pseudo.png', 'png',
+        decodingPlot.save_plot('Average decoding accuracy real-pseudo n=80.png', 'png',
                                savefigpath)
-        decodingPlot.save_plot('Average decoding accuracy real-pseudo.svg', 'svg',
+        decodingPlot.save_plot('Average decoding accuracy real-pseudo n=80.svg', 'svg',
                                savefigpath)
 
 
@@ -5808,15 +7822,15 @@ class fluoSum:
             decodingPlot = StartSubplots(1,2)
             bootADT_real = bootstrap(result_ADT['accuracy_real_trialType'][trial],1, 1000)
             bootADT_pseudo = bootstrap(result_ADT['accuracy_pseudo_trialType'][trial], 1, 1000)
-            decodingPlot.ax[0].plot(result_ADT['time'], bootADT_real['bootAve'], color='blue', label = 'real')
-            decodingPlot.ax[0].plot(result_ADT['time'], bootADT_pseudo['bootAve'], color = 'red', label = 'real')
+            decodingPlot.ax[0].plot(result_ADT['time'], bootADT_real['bootAve'], color=realColor, label = 'real')
+            decodingPlot.ax[0].plot(result_ADT['time'], bootADT_pseudo['bootAve'], color = pseudoColor, label = 'real')
             decodingPlot.ax[0].fill_between(result_ADT['time'], bootADT_real['bootLow'],
                                                             bootADT_real['bootHigh'],
-                                                            alpha=0.2, color=adtColor)
+                                                            alpha=0.2, color=realColor)
             decodingPlot.ax[0].fill_between(result_ADT['time'], bootADT_pseudo['bootLow'],
                                                     bootADT_pseudo['bootHigh'],
-                                                    alpha=0.2, color=adtColor)
-            decodingPlot.ax[0].set_ylim([0,1])
+                                                    alpha=0.2, color=realColor)
+            decodingPlot.ax[0].set_ylim([0.3,1.05])
             decodingPlot.ax[0].set_title('ADT,'+trial)
             # pair-wise wilcoxon test
             # p_list = []
@@ -5836,15 +7850,15 @@ class fluoSum:
             #                                                 [1, 1], color=(1, 69 / 255, 0), linewidth=5)
             bootJUV_real = bootstrap(result_JUV['accuracy_real_trialType'][trial],1, 1000)
             bootJUV_pseudo = bootstrap(result_JUV['accuracy_pseudo_trialType'][trial], 1, 1000)
-            decodingPlot.ax[1].plot(result_JUV['time'], bootJUV_real['bootAve'], color='blue', label = 'real')
-            decodingPlot.ax[1].plot(result_JUV['time'], bootJUV_pseudo['bootAve'], color = 'red', label = 'real')
+            decodingPlot.ax[1].plot(result_JUV['time'], bootJUV_real['bootAve'], color=realColor, label = 'real')
+            decodingPlot.ax[1].plot(result_JUV['time'], bootJUV_pseudo['bootAve'], color = pseudoColor, label = 'real')
             decodingPlot.ax[1].fill_between(result_JUV['time'], bootJUV_real['bootLow'],
                                                             bootJUV_real['bootHigh'],
-                                                            alpha=0.2, color='blue')
+                                                            alpha=0.2, color=realColor)
             decodingPlot.ax[1].fill_between(result_JUV['time'], bootJUV_pseudo['bootLow'],
                                                             bootJUV_pseudo['bootHigh'],
-                                                            alpha=0.2, color='red')
-            decodingPlot.ax[1].set_ylim([0, 1])
+                                                            alpha=0.2, color=pseudoColor)
+            decodingPlot.ax[1].set_ylim([0.3, 1.05])
             decodingPlot.ax[1].set_title('JUV,' + trial)
             p_list = []
             for tt in range(len(result_JUV['time'])):
@@ -5858,63 +7872,68 @@ class fluoSum:
                                       savefigpath)
 
         # test equal median for pseudo/real ensemble for ADT and JUV Hit trials
-        starttime = 1
-        endtime = 2
-        #aveADTHitPseudo = np.nanmean(result_ADT['accuracy'])
-        decodingAvePlot = StartSubplots(1,2)
+        timeMask1 = np.logical_and(decodingTime>=0, decodingTime<1)
+        timeMask2 = np.logical_and(decodingTime>=1, decodingTime<2)
 
+        JUV1_real = np.nanmean(result_JUV['accuracy_real'][timeMask1,:],0)
+        JUV1_pseudo = np.nanmean(result_JUV['accuracy_pseudo'][timeMask1,:],0)
 
-        decodingAvePlot.ax[0].set_xticks([1,2],['Real', 'Pseudo'])
-        decodingAvePlot.ax[0].set_title('ADT')
-        decodingAvePlot.ax[0].set_ylim([0.3, 1])
+        ADT1_real = np.nanmean(result_ADT['accuracy_real'][timeMask1,:],0)
+        ADT1_pseudo = np.nanmean(result_ADT['accuracy_pseudo'][timeMask1,:],0)
 
-        for x, y in zip(result_ADT['accuracy_ave_real'], result_ADT['accuracy_ave_pseudo']):
-            decodingAvePlot.ax[0].plot([1, 2], [x, y], color=adtColor, linewidth=1)
-        decodingAvePlot.ax[0].set_xticks([1, 2], ['Real', 'Pseudo'])
-        decodingAvePlot.ax[0].set_title('ADT')
-        decodingAvePlot.ax[0].set_ylim([0.5, 1])
-        for x, y in zip(result_JUV['accuracy_ave_real'], result_JUV['accuracy_ave_pseudo']):
-            decodingAvePlot.ax[1].plot([1, 2], [x, y], color=juvColor, linewidth=1)
+        JUV2_real = np.nanmean(result_JUV['accuracy_real'][timeMask2,:],0)
+        JUV2_pseudo = np.nanmean(result_JUV['accuracy_pseudo'][timeMask2,:],0)
 
-        decodingAvePlot.ax[1].set_xticks([1,2],['Real', 'Pseudo'])
-        decodingAvePlot.ax[1].set_title('JUV')
-        decodingAvePlot.ax[1].set_ylim([0.3, 1])
+        ADT2_real = np.nanmean(result_ADT['accuracy_real'][timeMask2,:],0)
+        ADT2_pseudo = np.nanmean(result_ADT['accuracy_pseudo'][timeMask2,:],0)
 
-        # sig test
+        # box plot on 0-1 and 1-2 seconds
+        x = np.array([1,2])
+        averageBoxPlot = StartPlots()
+        averageBoxPlot.ax.set_title('Decoding accuracy real(black) and pseudo(red) enesemble n =80')
+        averageBoxPlot.ax.set_ylim([0.3,1.05])
+        boxplot = averageBoxPlot.ax.boxplot([ADT2_real, JUV2_real],
+                                            positions= x-0.1,widths=0.2,patch_artist=True, showfliers=False,
+                                            boxprops=dict(facecolor=realColor, edgecolor=realColor),
+                                            whiskerprops=dict(color=realColor),
+                                            capprops=dict(color=realColor),
+                                            medianprops=dict(marker='o', color='white', markersize=5))
 
-        wilcoxon(result_JUV['accuracy_ave_real'], result_JUV['accuracy_ave_pseudo'])
-        from scipy.stats import ttest_rel
-        ttest_rel(result_ADT['accuracy_ave_real'], result_ADT['accuracy_ave_pseudo'])
-        ttest_rel(result_JUV['accuracy_ave_real'], result_JUV['accuracy_ave_pseudo'])
-        decodingAvePlot.save_plot('Average decoding accuracy real-pseudo.tiff', 'tiff',
-                                  savefigpath)
-        decodingAvePlot.save_plot('Average decoding accuracy real-pseudo.svg', 'svg',
-                                  savefigpath)
+        boxplot =averageBoxPlot.ax.boxplot([ADT2_pseudo,JUV2_pseudo],
+                                           positions=x+0.1, widths=0.2,patch_artist=True, showfliers=False,
+                                           boxprops=dict(facecolor=pseudoColor , edgecolor=pseudoColor ),
+                                            whiskerprops=dict(color=pseudoColor ),
+                                            capprops=dict(color=pseudoColor ),
+                                            medianprops=dict(marker='o', color='white', markersize=5))
+        averageBoxPlot.ax.set_xticks([1, 2], ['ADT', 'JUV'])
 
-        # plot real-pseudo difference for different trial types
-        for trial in trialTypes:
-            decodingAvePlot = StartSubplots(1, 2)
+        stats,p1_ADT = wilcoxon(ADT1_real, ADT1_pseudo)
+        stats,p1_JUV = wilcoxon(JUV1_real, JUV1_pseudo)
+        stats,p2_ADT = wilcoxon(ADT2_real, ADT2_pseudo)
+        stats,p2_JUV = wilcoxon(JUV2_real, JUV2_pseudo)
 
-            decodingAvePlot.ax[0].set_xticks([1, 2], ['Real', 'Pseudo'])
-            decodingAvePlot.ax[0].set_title('ADT')
-            decodingAvePlot.ax[0].set_ylim([0.3, 1])
+        stats, realp = mannwhitneyu(ADT2_real, JUV2_real)
+        stats, pseudop = mannwhitneyu(ADT2_pseudo, JUV2_pseudo)
+        p_list = [realp, pseudop, p2_ADT, p2_JUV]
+        q_list = multipletests(p_list, method = 'fdr_bh')[1]
 
-            for x, y in zip(result_ADT['accuracy_ave_trialType_real'][trial], result_ADT['accuracy_ave_trialType_pseudo'][trial]):
-                decodingAvePlot.ax[0].plot([1, 2], [x, y], color=adtColor, linewidth=1)
-            decodingAvePlot.ax[0].set_xticks([1, 2], ['Real', 'Pseudo'])
-            decodingAvePlot.ax[0].set_title('ADT')
-            decodingAvePlot.ax[0].set_ylim([0.5, 1])
-            for x, y in zip(result_JUV['accuracy_ave_trialType_real'][trial], result_JUV['accuracy_ave_trialType_pseudo'][trial]):
-                decodingAvePlot.ax[1].plot([1, 2], [x, y], color=juvColor, linewidth=1)
+        print("Wilcoxon results for adult:", p2_ADT)
+        print("Wilcoxon results for adolescent:", p2_JUV)
 
-            decodingAvePlot.ax[1].set_xticks([1, 2], ['Real', 'Pseudo'])
-            decodingAvePlot.ax[1].set_title('JUV')
-            decodingAvePlot.ax[1].set_ylim([0.3, 1])
-            decodingAvePlot.save_plot('Average decoding accuracy real-pseudo'+trial+' .tiff', 'tiff',
-                                      savefigpath)
-            decodingAvePlot.save_plot('Average decoding accuracy real-pseudo'+trial+' .svg', 'svg',
-                                      savefigpath)
+        print("Median of ADT 1-2 s, real:", np.median(ADT2_real))
+        print("MAD of ADT 1-2 s, real:", median_abs_deviation(ADT2_real))
+        print("Median of ADT 1-2 s, pseudo:", np.median(ADT2_pseudo))
+        print("MAD of ADT 1-2 s, pseudo:", median_abs_deviation(ADT2_pseudo))
+        print("Median of JUV 1-2 s, real:", np.median(JUV2_real))
+        print("MAD of JUV 1-2 s, real:", median_abs_deviation(JUV2_real))
+        print("Median of JUV 1-2 s, pseudo:", np.median(JUV2_pseudo))
+        print("MAD of JUV 1-2 s, pseudo:", median_abs_deviation(JUV2_pseudo))
 
+        averageBoxPlot.save_plot('Real pseudo decoding accuracy.png', 'png',savefigpath)
+        averageBoxPlot.save_plot('Real pseudo decoding accuracy.svg', 'svg', savefigpath)
+
+        diff_JUV = JUV2_real - JUV2_pseudo
+        diff_ADT = ADT2_real - ADT2_pseudo
 
 if __name__ == "__main__":
 
@@ -6050,16 +8069,14 @@ if __name__ == "__main__":
 
     test_summary = True
     if test_summary:
-        #root_dir = r'Z:\HongliWang\Madeline\LateLearning'
         root_dir = r'Z:\HongliWang\Madeline\LateLearning'
+        #root_dir = r'Z:\HongliWang\Madeline\Nonlearning_Early'
         fluo_summary = fluoSum(root_dir)
         fluo_summary.process_single_session()
 
         # plot single cell PSTH
         #fluo_summary.cell_plots()
 
-        # try MLR with 8 cues?
-        #fluo_summary.MLR_session()
 
         # separate groups into end stage (8 cues) and early stage (2-4 cues)
         #c1 = fluo_summary.data_df['numStim'] >= 8
@@ -6075,25 +8092,39 @@ if __name__ == "__main__":
         ADT_late = fluo_summary.data_df[c2]
         JUV_late = fluo_summary.data_df[c3]
         group_label = 'late'
+        #fluo_summary.MLR_session()
         #fluo_summary.MLR_summary(ADT_late, JUV_late, group_label)
+        #fluo_summary.dff_running_summary(ADT_late, JUV_late, group_label)
         # multiple linear regression
-        n_predictors = 14
-        #fluo_summary.decoding_session(n_predictors)
+
+
+        classifier = 'SVC'
+        spec = ''  # vanilla decoding
+        #fluo_summary.decoding_session(n_predictors, classifier, spec)
+        spec = 'noRun_' # decoding with adjusted df/f
+        # fluo_summary.decoding_session(n_predictors, classifier, spec)
+        #classifier = 'RBF'
+        #fluo_summary.decoding_session(n_predictors, classifier)
 
         # similarly, separate groups into end stage and early stage
         #fluo_summary.decoding_summary_running(ADT_late, JUV_late, group_label)
-        fluo_summary.decoding_summary(ADT_late, JUV_late, group_label)
-
-        #cue_pairs = [2,3,6,7]
+        spec=''
+        fluo_summary.decoding_summary(ADT_late, JUV_late, classifier,spec)
+        #fluo_summary.decoding_summary_byAnimal(ADT_late, JUV_late, group_label)
+        #cue_list = [[3,4,5,6], [1,2,7,8],[1,3,6,8],[2,3,6,7],[1,4,5,8],[2,4,5,7]]
+        cue_pairs = [3,4,5,6]
         #fluo_summary.decoding_hardeasy_session(n_predictors, cue_pairs)
         #fluo_summary.decoding_hardeasy_summary(ADT_late, JUV_late, cue_pairs, group_label)
+        #for cue_pairs in cue_list:
+        #    fluo_summary.decoding_hardeasy_session(n_predictors, cue_pairs)
+        #    fluo_summary.decoding_hardeasy_summary(ADT_late, JUV_late, cue_pairs, group_label)
         #fluo_summary.dpca_session()
-        #fluo_summary.noise_session()
+        #fluo_summary.noise_session()---------------
         #fluo_summary.noise_summary(ADT_late, JUV_late, group_label)
         #fluo_summary.noise_summary_Valente_2021(ADT_late, JUV_late, group_label)
 
-        fluo_summary.pseudo_session()
-        fluo_summary.pseudo_summray(ADT_late, JUV_late, group_label)
+        #fluo_summary.pseudo_session()
+        fluo_summary.pseudo_summary(ADT_late, JUV_late, group_label)
         x=1
 
 # predict neural activity from running and from running+stimulus see if there is any improvement

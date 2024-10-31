@@ -2649,7 +2649,7 @@ if __name__ == "__main__":
 
     test_summary = True
     if test_summary == True:
-        root_dir = r'Z:\HongliWang\Madeline\LateLearning'
+        root_dir = r'Z:\HongliWang\Madeline\Nonlearning_Late'
         beh_sum = GoNogoBehaviorSum(root_dir)
         matplotlib.use('Agg')
         beh_sum.process_singleSession(ifrun=True)
@@ -2671,7 +2671,7 @@ if __name__ == "__main__":
     test_comp = True
     if test_comp == True:
         matplotlib.use('Agg')
-        root_dir_early = r'Z:\HongliWang\Madeline\EarlyLearning'
+        root_dir_early = r'Z:\HongliWang\Madeline\Nonlearning_Early'
         beh_sum_early = GoNogoBehaviorSum(root_dir_early)
         beh_sum_early.process_singleSession(ifrun=True)
         beh_sum_early.read_data()

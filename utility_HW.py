@@ -6,7 +6,7 @@ import warnings
 warnings.filterwarnings("ignore")
 
 
-def bootstrap(data, dim, dim0, n_sample=1000):
+def bootstrap(data, dim, dim0, n_sample=1000, median=False):
     """
     input:
     data: data matrix for bootstrap
@@ -24,7 +24,10 @@ def bootstrap(data, dim, dim0, n_sample=1000):
         # Bootstrap the matrix along the chosen dimension
         bootstrapped_matrix = np.take(data, bootstrap_indices, axis=dim)
 
-        meanBoot = np.nanmean(bootstrapped_matrix,2)
+        if median:
+            meanBoot = np.nanmedian(bootstrapped_matrix,2)
+        else:
+            meanBoot = np.nanmean(bootstrapped_matrix,2)
         bootAve = np.nanmean(bootstrapped_matrix, axis=(1, 2))
         bootHigh = np.nanpercentile(meanBoot, 97.5, axis=1)
         bootLow = np.nanpercentile(meanBoot, 2.5, axis=1)

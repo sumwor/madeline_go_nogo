@@ -1,5 +1,5 @@
 %% Analyze Behavior
-root_path = 'Z:\HongliWang\Madeline\LateLearning';
+root_path = 'Z:\HongliWang\Madeline\Nonlearning_Early';
 
 %% making folders
 data_path = fullfile(root_path, 'Data'); % use fullfile to accomodate for different file separators in windows/osx
