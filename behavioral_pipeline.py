@@ -456,7 +456,7 @@ class GoNogoBehaviorMat(BehaviorMat):
             # plot the outcome according to trials
 
 
-            beh_plots = StartPlots()
+            beh_plots = StartPlots(figsize=(20,5))
             # hit trials
             if self.ifCut:
                 behDF = self.DFFull
@@ -465,39 +465,60 @@ class GoNogoBehaviorMat(BehaviorMat):
                 behDF = self.DF
                 trialNum = np.arange(self.trialN)
 
-            beh_plots.ax.scatter(trialNum[behDF.trialType == 2], np.array(behDF.trialType[behDF.trialType == 2]),
-                       s=100, marker='o')
+            Go_color = np.array([30/255, 62/255, 98/255])
+            Nogo_color = [255/255,101/255,0]
+        # Hit Trials
+            beh_plots.ax.vlines(x=trialNum[behDF.trialType == 2], ymin=0, ymax=2, colors=(30/255, 62/255, 98/255))
 
             # miss trials
-            beh_plots.ax.scatter(trialNum[behDF.trialType == -2], behDF.trialType[behDF.trialType == -2], s=100,
-                       marker='x')
+            beh_plots.ax.vlines(x=trialNum[behDF.trialType == -2], ymin=0, ymax=1, colors=(30/255, 62/255, 98/255))
 
             # false alarm
-            beh_plots.ax.scatter(trialNum[behDF.trialType == -1], behDF.trialType[behDF.trialType == -1], s=100,
-                       marker='*')
+            beh_plots.ax.vlines(x=trialNum[behDF.trialType == -1], ymin=0, ymax=-2, colors=(255/255,101/255,0))
 
             # correct rejection
-            beh_plots.ax.scatter(trialNum[behDF.trialType == 0], behDF.trialType[behDF.trialType == 0], s=100,
-                       marker='.')
+            beh_plots.ax.vlines(x=trialNum[behDF.trialType == 0], ymin=0, ymax=-1, colors=(255/255,101/255,0))
 
+            beh_plots.ax.set_yticks([-2,-1,1,2], ['FA', 'CR', 'Miss', 'Hit'])
+
+            # set color gradient for Go and No cues
+            gocolors = [(30/255, 62/255, 98/255), (70 / 255, 100 / 255, 120 / 255), (100 / 255, 150 / 255, 170 / 255),
+                      (150 / 255, 200 / 255, 230 / 255)]
+            # Define the colors for the gradient (4 colors including the start color)
+            nogocolors = [
+                (255/255,101/255,0),  # Starting color (orange)
+                (255 / 255, 150 / 255, 0),  # Lighter orange
+                (255 / 255, 200 / 255, 50 / 255),  # Even lighter orange/yellow
+                (255 / 255, 255 / 255, 100 / 255)  # Yellowish color
+            ]
+            for cue in [1,2,3,4]:
+                beh_plots.ax.scatter(trialNum[behDF.sound_num==cue], np.full((len(trialNum[behDF.sound_num==cue])),2.2),s=50,
+                                     c=gocolors[cue-1],marker='.',label = str(cue))
+            for cue in [5,6,7,8]:
+                beh_plots.ax.scatter(trialNum[behDF.sound_num == cue],
+                                     np.full((len(trialNum[behDF.sound_num == cue])), -2.2), s=50, c=nogocolors[8-cue],
+                                     marker='.',label= str(cue))
+            beh_plots.ax.legend(loc='upper left', bbox_to_anchor=(1, 1))
             # probe lick
-            beh_plots.ax.scatter(trialNum[behDF.trialType == -3], behDF.trialType[behDF.trialType == -3], s=100,
-                       marker='v')
+            #beh_plots.ax.scatter(trialNum[behDF.trialType == -3], behDF.trialType[behDF.trialType == -3], s=100,
+            #           marker='v')
 
             # probe no lick
-            beh_plots.ax.scatter(trialNum[behDF.trialType == -4], behDF.trialType[behDF.trialType == -4], s=100,
-                       marker='^')
+            #beh_plots.ax.scatter(trialNum[behDF.trialType == -4], behDF.trialType[behDF.trialType == -4], s=100,
+            #           marker='^')
+
+            # plot the sound cue
 
             #ax.spines['top'].set_visible(False)
             #ax.spines['right'].set_visible(False)
             beh_plots.ax.set_title('Session summary')
             beh_plots.ax.set_xlabel('Trials')
             beh_plots.ax.set_ylabel('Outcome')
-            leg = beh_plots.legend(['Hit', 'Miss', 'False alarm', 'Correct rejection', 'Probe lick', 'Probe miss'])
+            #leg = beh_plots.legend(['Hit', 'Miss', 'False alarm', 'Correct rejection', 'Probe lick', 'Probe miss'])
 
             #legend.get_frame().set_linewidth(0.0)
             #legend.get_frame().set_facecolor('none')
-            beh_plots.fig.set_figwidth(40)
+            #beh_plots.fig.set_figwidth(40)
             #plt.show()
 
             # save the plot
@@ -1217,18 +1238,18 @@ class GoNogoBehaviorSum:
 
             # x.beh_cut(plot_path)
             # run analysis_beh
-            x.d_prime()
+            #x.d_prime()
 
             # make plot
             x.beh_session(plot_path, ifrun)
-            x.psycho_curve(plot_path, ifrun)
-            x.lick_rate(plot_path, ifrun)
-            x.ITI_distribution(plot_path, ifrun)
-            x.response_time(plot_path, ifrun)
+            #x.psycho_curve(plot_path, ifrun)
+            #x.lick_rate(plot_path, ifrun)
+            #x.ITI_distribution(plot_path, ifrun)
+            #x.response_time(plot_path, ifrun)
             #x.logistic_regression(plot_path,ifrun)
-            x.running_aligned('onset', plot_path, ifrun)
-            x.running_aligned('outcome', plot_path, ifrun)
-            x.running_aligned('licks', plot_path, ifrun)
+            #x.running_aligned('onset', plot_path, ifrun)
+            #x.running_aligned('outcome', plot_path, ifrun)
+            #x.running_aligned('licks', plot_path, ifrun)
 
             plt.close('all')
             x.save_analysis(output_path, ifrun)
@@ -2649,7 +2670,7 @@ if __name__ == "__main__":
 
     test_summary = True
     if test_summary == True:
-        root_dir = r'Z:\HongliWang\Madeline\Nonlearning_Late'
+        root_dir = r'Z:\HongliWang\Madeline\LateLearning'
         beh_sum = GoNogoBehaviorSum(root_dir)
         matplotlib.use('Agg')
         beh_sum.process_singleSession(ifrun=True)
