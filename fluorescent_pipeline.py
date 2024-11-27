@@ -3964,6 +3964,18 @@ class fluoSum:
             for ii in range(nCells):
                 sel_index[ii,:]= (PSTH_combined['go',ii] - PSTH_combined['nogo',ii])/(PSTH_combined['go',ii] + PSTH_combined['nogo',ii])
 
+            # calculate center of mass
+            centers_of_mass = np.array([
+                np.average(np.arange(len(row)), weights=row) if np.sum(row) > 0 else 0
+                for row in sel_index
+            ])
+
+            # sort the selectivity by center of mass
+            sorted_indices = np.argsort(centers_of_mass)
+            sorted_selectivity = sel_index[sorted_indices]
+
+            # heatmap of selectivity
+
     def MLR_session(self):
         # run multiple linear regression session by session
         #n_predictors = 14
