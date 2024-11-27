@@ -3981,7 +3981,11 @@ class fluoSum:
             plt.xlabel('Time from cue')
             plt.ylabel('Selectivity index')
             plt.show()
-            
+
+            plt.savefig(os.path.join(savePSTHFolder, 'Selectivity.png'), format='png',
+                        dpi=300)
+            plt.savefig(os.path.join(savePSTHFolder, 'Selectivity.svg'), format='svg')
+
     def MLR_session(self):
         # run multiple linear regression session by session
         #n_predictors = 14
