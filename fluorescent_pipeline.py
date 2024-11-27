@@ -26,6 +26,8 @@ import matplotlib.patches as mpatches
 from matplotlib import animation
 from mpl_toolkits.mplot3d import Axes3D
 import matplotlib
+
+from matplotlib.cm import get_cmap
 from scipy.stats import binomtest
 from scipy.spatial.distance import cosine
 from behavioral_pipeline import BehaviorMat, GoNogoBehaviorMat
@@ -3840,6 +3842,128 @@ class fluoSum:
                     os.makedirs(savefigpath)
                 analysis.plot_dFF(savefigpath)
 
+    def selectivity_session(self):
+        nFiles = self.data_df.shape[0]
+        for f in tqdm(range(nFiles)):
+            if self.data_df['with_imaging'][f]:
+                analysis = self.data_df['fluo_analysis'][f]
+                gn_series = self.data_df['fluo_raw'][f]
+                saveDataPath = os.path.join(self.data_df.iloc[f]['fluo_analysis_dir'],'MLR')
+                if not os.path.exists(saveDataPath):
+                    os.makedirs(saveDataPath)
+
+                saveTbTFile = os.path.join(saveDataPath, 'trialbytrialVar_nR.pickle')
+                saveMatFile = os.path.join(saveDataPath, 'trialbytrialVar_nR.mat')
+                import scipy.io
+
+                if not os.path.exists(saveMatFile):
+                    X, y, regr_time = analysis.linear_model(n_predictors)
+                    tbtVar = {}
+                    tbtVar['X'] = X
+                    tbtVar['y'] = y
+                    tbtVar['regr_time'] = regr_time
+
+                    scipy.io.savemat(saveMatFile, tbtVar)
+                    #
+                # save X and y
+                    with open(saveTbTFile, 'wb') as pf:
+                        pickle.dump(tbtVar, pf, protocol=pickle.HIGHEST_PROTOCOL)
+                        pf.close()
+                else:
+                    # load the saved results
+                    with open(saveTbTFile, 'rb') as pf:
+                        tbtVar = pickle.load(pf)
+                        X = tbtVar['X']
+                        y = tbtVar['y']
+                        regr_time = tbtVar['regr_time']
+
+                # calculate the selectivity (for different sound cues?)
+                # average across
+                # calculate PSTH for different cues
+                PSTH = {}
+                nCells = y.shape[0]
+                for cue in tqdm([1,2,3,4,5,6,7,8]):
+                    for cell in range(nCells):
+                        tempdFF = y[cell, analysis.beh['sound_num']==cue,:]
+                        # bootstrap to get the curve
+                        bootdFF = bootstrap(tempdFF.T, 1, 0, 1000)
+                        PSTH[(cue,cell)] = bootdFF
+
+                # plot the PSTH
+                savePSTHFolder = os.path.join(self.data_df.iloc[f]['fluo_analysis_dir'],'PSTH')
+                if not os.path.exists(savePSTHFolder):
+                    os.makedirs(savePSTHFolder)
+
+                cmap = get_cmap('viridis')
+
+                # Extract 8 equally spaced colors
+                n_colors = 8
+                colors = [cmap(i / (n_colors - 1)) for i in range(n_colors)]
+
+                for cell in range(nCells):
+                    fig,ax = plt.subplots()
+                    for cue in [1,2,3,4,5,6,7,8]:
+                        ax.plot(regr_time, PSTH[cue,cell]['bootAve'],color = colors[cue-1], linewidth = 2,
+                                 label = str(cue))
+                        ax.fill_between(regr_time, PSTH[cue,cell]['bootLow'], PSTH[cue,cell]['bootHigh'],
+                                         alpha = 0.2, color = colors[cue-1])
+                        ax.legend(loc='upper left', bbox_to_anchor=(1, 1))
+                                                # Make the box invisible by hiding all spines
+                    ax.spines['top'].set_visible(False)
+                    ax.spines['right'].set_visible(False)
+
+                    # Keep the x and y axes visible
+                    ax.spines['bottom'].set_visible(True)
+                    ax.spines['left'].set_visible(True)
+
+                    ax.set_title('Cell {cell}'.format(cell = cell))
+
+                    # save figure in png and svg
+                    plt.savefig(os.path.join(savePSTHFolder, 'PSTH_cell{cell}.png'.format(cell = cell)),format='png', dpi = 300)
+                    plt.savefig(os.path.join(savePSTHFolder, 'PSTH_cell{cell}.svg'.format(cell=cell)), format='svg')
+                        # plot high and low as shades
+
+                # combine go/nogo cues
+                PSTH_combined = {}
+                nCells = y.shape[0]
+                for cue in ['go','nogo']:
+                    for cell in range(nCells):
+                        tempdFF = y[cell, analysis.beh['go_nogo']==cue,:]
+                        # bootstrap to get the curve
+                        bootdFF = bootstrap(tempdFF.T, 1, 0, 1000)
+                        PSTH_combined[(cue,cell)] = bootdFF
+                        
+                colors_combined = {}
+                colors_combined['go'] = colors[0]
+                colors_combined['nogo'] = colors[1]
+
+                for cell in range(nCells):
+                    fig,ax = plt.subplots()
+                    for cue in ['go', 'nogo']:
+                        ax.plot(regr_time, PSTH_combined[cue,cell]['bootAve'],color = colors_combined[cue], linewidth = 2,
+                                 label = cue)
+                        ax.fill_between(regr_time, PSTH_combined[cue,cell]['bootLow'], PSTH_combined[cue,cell]['bootHigh'],
+                                         alpha = 0.2, color = colors_combined[cue])
+                        ax.legend(loc='upper left', bbox_to_anchor=(1, 1))
+                                                # Make the box invisible by hiding all spines
+                    ax.spines['top'].set_visible(False)
+                    ax.spines['right'].set_visible(False)
+
+                    # Keep the x and y axes visible
+                    ax.spines['bottom'].set_visible(True)
+                    ax.spines['left'].set_visible(True)
+
+                    ax.set_title('Cell {cell} combined'.format(cell = cell))
+
+                    # save figure in png and svg
+                    plt.savefig(os.path.join(savePSTHFolder, 'PSTH_cell{cell}_combined.png'.format(cell = cell)),format='png', dpi = 300)
+                    plt.savefig(os.path.join(savePSTHFolder, 'PSTH_cell{cell}_combined.svg'.format(cell=cell)), format='svg')
+
+            # calculate selectivity index
+            sel_index = np.zeros((nCells, len(regr_time)))
+            for ii in range(nCells):
+                sel_index[ii,:]= (PSTH_combined['go',ii] - PSTH_combined['nogo',ii])/(PSTH_combined['go',ii] + PSTH_combined['nogo',ii])
+
     def MLR_session(self):
         # run multiple linear regression session by session
         #n_predictors = 14
@@ -3876,8 +4000,8 @@ class fluoSum:
                         pf.close()
                 else:
                     # load the saved results
-                    with open(saveTbTFile, 'rb') as f:
-                        tbtVar = pickle.load(f)
+                    with open(saveTbTFile, 'rb') as pf:
+                        tbtVar = pickle.load(pf)
                         X = tbtVar['X']
                         y = tbtVar['y']
                         regr_time = tbtVar['regr_time']
@@ -8092,6 +8216,9 @@ if __name__ == "__main__":
         ADT_late = fluo_summary.data_df[c2]
         JUV_late = fluo_summary.data_df[c3]
         group_label = 'late'
+
+        fluo_summary.selectivity_session()
+
         #fluo_summary.MLR_session()
         #fluo_summary.MLR_summary(ADT_late, JUV_late, group_label)
         #fluo_summary.dff_running_summary(ADT_late, JUV_late, group_label)
