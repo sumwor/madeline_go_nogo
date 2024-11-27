@@ -3975,7 +3975,13 @@ class fluoSum:
             sorted_selectivity = sel_index[sorted_indices]
 
             # heatmap of selectivity
-
+            plt.figure()
+            sns.heatmap(sorted_selectivity, annot=True, cmap='viridis', cbar=True, fmt='d')
+            plt.title('Sorted selectivity index')
+            plt.xlabel('Time from cue')
+            plt.ylabel('Selectivity index')
+            plt.show()
+            
     def MLR_session(self):
         # run multiple linear regression session by session
         #n_predictors = 14
